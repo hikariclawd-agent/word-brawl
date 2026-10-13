@@ -1,0 +1,40 @@
+{
+  "name": "mobile",
+  "version": "1.1.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@animal-name-place/game-core": "workspace:*",
+    "@animal-name-place/shared": "workspace:*",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@supabase/supabase-js": "^2.108.2",
+    "expo": "~56.0.12",
+    "expo-audio": "^56.0.12",
+    "expo-status-bar": "~56.0.4",
+    "lucide-react-native": "^1.22.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-svg": "15.15.4",
+    "react-native-url-polyfill": "^3.0.0",
+    "react-native-web": "^0.21.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "prestart": "corepack pnpm --workspace-root version:metadata",
+    "start": "expo start",
+    "preandroid": "corepack pnpm --workspace-root version:metadata",
+    "android": "expo run:android",
+    "preios": "corepack pnpm --workspace-root version:metadata",
+    "ios": "expo run:ios",
+    "preweb": "corepack pnpm --workspace-root version:metadata",
+    "web": "expo start --web",
+    "pretypecheck": "corepack pnpm --workspace-root version:metadata",
+    "typecheck": "tsc --noEmit",
+    "pretest": "corepack pnpm --workspace-root version:metadata",
+    "test": "vitest run"
+  },
+  "private": true
+}

@@ -1,0 +1,34 @@
+{
+  "name": "animal-name-place",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "start": "corepack pnpm --filter mobile start",
+    "mobile": "corepack pnpm --filter mobile start",
+    "mobile:android": "corepack pnpm --filter mobile android",
+    "monitor:setup-role": "node .local-monitor/scripts/setup-role.mjs",
+    "monitor:start": "node .local-monitor/scripts/monitor.mjs",
+    "monitor:report": "node .local-monitor/scripts/report.mjs",
+    "monitor:test": "node .local-monitor/scripts/test-monitor.mjs",
+    "typecheck": "corepack pnpm --recursive typecheck",
+    "test": "corepack pnpm --recursive --if-present test",
+    "supabase": "supabase",
+    "supabase:start": "supabase start",
+    "supabase:status": "supabase status",
+    "supabase:db:reset": "supabase db reset --local",
+    "supabase:db:push": "supabase db push",
+    "version:metadata": "node scripts/versioning/write-build-metadata.mjs",
+    "version:check": "node scripts/versioning/check.mjs",
+    "version:test": "vitest run scripts/versioning/lib.test.mjs",
+    "release:verify": "node scripts/versioning/release-verify.mjs",
+    "word-bank:import-datamuse": "node scripts/word-bank/import-datamuse.mjs"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1",
+    "supabase": "^2.108.0",
+    "typescript": "~6.0.3",
+    "vitest": "^4.0.15"
+  }
+}

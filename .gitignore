@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Credentials
+*.pem
+*.key
+*.keystore
+*.jks
+*.p8
+*.p12
+credentials.json
+
+# Build outputs
+.expo/
+dist/
+web-build/
+coverage/
+*.apk
+*.aab
+*.log
+*.tsbuildinfo
+
+# Android build artifacts
+**/.gradle/
+**/.kotlin/
+**/.cxx/
+**/build/
+**/local.properties
+
+# Temporary files
+tmp/
+.local-backups/
+.local-monitor/
+
+# Agent-local information
+.secrets/
+.brv/
+.kb/
+.openclaw/
+
+# Local AI agent configuration
+.claude/

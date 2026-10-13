@@ -1,0 +1,46 @@
+# Dependencies and local Expo output
+node_modules/
+.expo/
+dist/
+web-build/
+coverage/
+expo-env.d.ts
+*.tsbuildinfo
+
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.keystore
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+credentials.json
+secrets/
+.secrets/
+*.backup
+*.bak
+*.remote-backup
+.local-backups/
+
+# Local Android-only state and generated build outputs.
+# Keep the Android source project itself included for EAS native builds.
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/app/.cxx/
+android/app/build/
+android/build/
+android/**/build/
+
+# Debug/log noise
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+.DS_Store
+.metro-health-check*
+package-lock.json

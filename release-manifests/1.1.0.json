@@ -1,0 +1,134 @@
+{
+  "appVersion": "1.1.0",
+  "buildIdentifier": "ios:9/android:9",
+  "gitCommit": "unknown",
+  "releaseDate": "2026-10-12",
+  "releaseStatus": "source-prepared",
+  "databaseMigrationsIncluded": [
+    "20260627231500_initial_game_schema",
+    "20260629103000_room_expiry_15_minutes",
+    "20260629120500_room_lifecycle_update_policy",
+    "20260706021000_word_entries_cache",
+    "20260706100200_room_letter_picker",
+    "20260707193200_room_setup_sync",
+    "20260707215200_room_empty_since",
+    "20260708183600_answer_disputes",
+    "20260709115500_room_visibility",
+    "20260709215500_live_brawl_eight_seat_bot_limit",
+    "20260709233500_live_brawl_session_advance",
+    "20260709235000_fix_live_brawl_session_advance_round_number",
+    "20260709235500_live_brawl_matchmaking_buckets",
+    "20260710155500_web_app_performance_indexes",
+    "20261004222500_authoritative_answer_commands",
+    "20261004223500_authoritative_vote_commands",
+    "20261004224000_server_resolves_votes_and_scores",
+    "20261004224500_revoke_direct_vote_writes",
+    "20261004225000_configurable_server_scoring",
+    "20261004225500_expand_server_score_range",
+    "20261004230000_player_facing_scoring_model",
+    "20261005141500_authoritative_dispute_open",
+    "20261005142500_authoritative_dispute_votes",
+    "20261005210000_authoritative_dispute_resolution",
+    "20261010113000_live_room_authority",
+    "20261010113100_live_room_creation_fix",
+    "20261010113200_live_room_seat_guard",
+    "20261010113300_live_room_snapshot_lifecycle",
+    "20261010113400_live_room_host_continuity",
+    "20261010113500_managed_private_join",
+    "20261010131000_live_bot_identity_consistency",
+    "20261010131800_live_bot_shared_words",
+    "20261011103200_live_brawl_authoritative_timeouts",
+    "20261011133000_stage2_dispute_timeout_and_resolution_fix",
+    "20261011141500_stage3_server_authority_hardening",
+    "20261011194000_live_brawl_two_seat_target",
+    "20261011200900_live_brawl_two_seat_matchmaking",
+    "20261011231000_live_brawl_matchmaking_window",
+    "20261012010000_live_brawl_five_seat_sequential_matchmaking",
+    "20261012010500_fix_live_brawl_five_seat_advance_ambiguity",
+    "20261012094500_auto_score_solo_live_brawl_answers",
+    "20261012113000_reviewable_answer_validation_cache",
+    "20261012113500_fix_validation_cache_normalization",
+    "20261012114500_word_validation_background_enrichment",
+    "20261012132000_require_complete_live_brawl_answer_categories",
+    "20261012133500_enrichment_stale_reclaim_and_backoff",
+    "20261012141000_diacritic_normalization_and_source_precedence",
+    "20261012144500_expand_african_latin_normalization"
+  ],
+  "keyFeaturesAndFixes": [
+    "Introduces server-authoritative reviewable answer validation with unknown answers shown as Needs review instead of automatically invalid.",
+    "Adds word validation cache, enrichment job queue, enrichment monitoring events, and authenticated local Supabase Edge Function worker support.",
+    "Moves Check meaning onto the same Supabase validation path used by scoring, avoiding phone-side dictionary split-brain.",
+    "Requires live answer submissions to match the room category set, storing missing categories as blanks and rejecting forged category keys.",
+    "Reclaims expired running validation-enrichment jobs and applies bounded retry backoff after provider failures.",
+    "Adds diacritic-aware answer normalization and explicit source-precedence coverage for African and international names and places.",
+    "Live Brawl matchmaking now fills five total seats through sequential 650ms real-player search windows.",
+    "Committed bot seats are permanent and cannot be replaced by late real-player joins.",
+    "Server-side room advancement adds at most one bot per expired search window and starts the match only at five total seats.",
+    "Round timer stays visible as a floating sticky timer while players scroll through the answer screen.",
+    "Client and Supabase matchmaking targets are aligned at five total seats.",
+    "Solo human Live Brawl rounds against bot-filled seats now receive server-authored answer verdicts and points instead of finishing at zero."
+  ],
+  "testsExecuted": [
+    {
+      "command": "corepack pnpm --filter mobile test",
+      "result": "passed",
+      "notes": "mobile: 2 files, 19 tests passed. One earlier parallel run failed before executing tests because Vitest workers timed out starting; rerun alone passed."
+    },
+    {
+      "command": "corepack pnpm --filter mobile typecheck",
+      "result": "passed",
+      "notes": "TypeScript check passed."
+    },
+    {
+      "command": "corepack pnpm --filter @animal-name-place/game-core test",
+      "result": "passed",
+      "notes": "game-core: 2 files, 21 tests passed."
+    },
+    {
+      "command": "corepack pnpm version:test",
+      "result": "passed",
+      "notes": "versioning: 1 file, 2 tests passed."
+    },
+    {
+      "command": "corepack pnpm supabase db lint --local",
+      "result": "passed",
+      "notes": "No fatal local schema lint errors; existing warnings remain."
+    },
+    {
+      "command": "docker exec -i supabase_db_animal-name-place psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/live_room_authority.sql",
+      "result": "passed",
+      "notes": "Verified five seats, sequential bot fill, no bot replacement, solo-human server scoring, reviewable unknown answers, enrichment queue behavior, wrong-category rejection, replay/idempotency, permissions, snapshots, and reconnect."
+    },
+    {
+      "command": "docker exec -i supabase_db_animal-name-place psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/live_bot_diversity.sql",
+      "result": "passed",
+      "notes": "Verified distinct bot identities, stable snapshots, varied fill behavior, and shared-word scoring."
+    },
+    {
+      "command": "docker exec -i supabase_db_animal-name-place psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/live_dispute_authority.sql",
+      "result": "passed",
+      "notes": "Dispute authority test passed."
+    },
+    {
+      "command": "docker exec -i supabase_db_animal-name-place psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/live_server_authority_stage3.sql",
+      "result": "passed",
+      "notes": "Server authority hardening test passed."
+    },
+    {
+      "command": "python3 supabase/tests/live_room_concurrency.py",
+      "result": "passed",
+      "notes": "Verified concurrent joins, concurrent advances, target5, one round, late-join exclusion, sequential bot fill, and stable bot snapshots."
+    },
+    {
+      "command": "corepack pnpm version:check",
+      "result": "passed",
+      "notes": "Metadata matched app version 1.1.0 and build identifier ios:9/android:9; warned that source changes are uncommitted."
+    }
+  ],
+  "knownLimitations": [
+    "Source metadata alone does not prove that a native build was generated or installed on a device.",
+    "Git commit is unknown until the release source is committed.",
+    "Build installation verification is manual and remains false until a packaged build is installed and checked on the phone."
+  ],
+  "installedAndVerified": false
+}

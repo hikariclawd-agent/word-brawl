@@ -1,0 +1,84 @@
+{
+  "appVersion": "1.0.1",
+  "buildIdentifier": "ios:1/android:1",
+  "gitCommit": "unknown",
+  "releaseDate": "2026-10-11",
+  "releaseStatus": "source-prepared",
+  "databaseMigrationsIncluded": [
+    "20260627231500_initial_game_schema",
+    "20260629103000_room_expiry_15_minutes",
+    "20260629120500_room_lifecycle_update_policy",
+    "20260706021000_word_entries_cache",
+    "20260706100200_room_letter_picker",
+    "20260707193200_room_setup_sync",
+    "20260707215200_room_empty_since",
+    "20260708183600_answer_disputes",
+    "20260709115500_room_visibility",
+    "20260709215500_live_brawl_eight_seat_bot_limit",
+    "20260709233500_live_brawl_session_advance",
+    "20260709235000_fix_live_brawl_session_advance_round_number",
+    "20260709235500_live_brawl_matchmaking_buckets",
+    "20260710155500_web_app_performance_indexes",
+    "20261004222500_authoritative_answer_commands",
+    "20261004223500_authoritative_vote_commands",
+    "20261004224000_server_resolves_votes_and_scores",
+    "20261004224500_revoke_direct_vote_writes",
+    "20261004225000_configurable_server_scoring",
+    "20261004225500_expand_server_score_range",
+    "20261004230000_player_facing_scoring_model",
+    "20261005141500_authoritative_dispute_open",
+    "20261005142500_authoritative_dispute_votes",
+    "20261005210000_authoritative_dispute_resolution",
+    "20261010113000_live_room_authority",
+    "20261010113100_live_room_creation_fix",
+    "20261010113200_live_room_seat_guard",
+    "20261010113300_live_room_snapshot_lifecycle",
+    "20261010113400_live_room_host_continuity",
+    "20261010113500_managed_private_join",
+    "20261010131000_live_bot_identity_consistency",
+    "20261010131800_live_bot_shared_words",
+    "20261011103200_live_brawl_authoritative_timeouts",
+    "20261011133000_stage2_dispute_timeout_and_resolution_fix",
+    "20261011141500_stage3_server_authority_hardening"
+  ],
+  "keyFeaturesAndFixes": [
+    "Mobile app version 1.0.1 is the official Word Brawl release version.",
+    "Root package version remains independent for workspace tooling.",
+    "Release metadata can be checked with corepack pnpm version:check.",
+    "Release source verification can be run with corepack pnpm release:verify.",
+    "About screen exposes app version, build identifier, build date, environment, and git commit."
+  ],
+  "testsExecuted": [
+    {
+      "command": "corepack pnpm version:check",
+      "result": "passed",
+      "notes": "Metadata matched app version 1.0.1 and build identifier ios:1/android:1. Warned that source changes are uncommitted."
+    },
+    {
+      "command": "corepack pnpm version:test",
+      "result": "passed",
+      "notes": "Versioning helper tests passed."
+    },
+    {
+      "command": "corepack pnpm test",
+      "result": "passed",
+      "notes": "game-core: 2 files, 20 tests passed. mobile: 2 files, 19 tests passed."
+    },
+    {
+      "command": "corepack pnpm typecheck",
+      "result": "passed",
+      "notes": "game-core, shared, and mobile TypeScript checks passed."
+    },
+    {
+      "command": "corepack pnpm release:verify",
+      "result": "failed",
+      "notes": "Source checks, unit tests, typecheck, and Expo web export passed. Local Supabase SQL tests failed because SQL test output has no TAP plan."
+    }
+  ],
+  "knownLimitations": [
+    "Source metadata alone does not prove that a native build was generated or installed on a device.",
+    "Git commit is unknown until the release source is committed.",
+    "Build installation verification is manual and remains false until a packaged build is installed and checked on the phone."
+  ],
+  "installedAndVerified": false
+}

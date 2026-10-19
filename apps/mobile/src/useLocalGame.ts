@@ -970,7 +970,7 @@ export function useLocalGame() {
         if (
           !isMounted
           || !isCurrentOnlineMatchContext(context)
-          || (currentContext?.roundId !== null && currentContext?.roundId !== hydrationContext.roundId)
+          || (currentContext?.roundId !== context.roundId)
         ) {
           return;
         }

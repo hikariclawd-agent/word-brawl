@@ -6579,7 +6579,7 @@ export default function App() {
         animationType="fade"
         onRequestClose={() => setShowNextLetterModal(false)}
         transparent
-        visible={showNextLetterModal && !isMatchComplete}
+        visible={showNextLetterModal && screen === 'leaderboard' && !isMatchComplete}
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.letterPickerModal}>

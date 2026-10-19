@@ -12,17 +12,17 @@ import {
 
 afterEach(() => vi.useRealTimers());
 describe('Live Brawl human search window', () => {
-  it('expires at 650ms, not one tick earlier, independent of round duration', async () => {
+  it('expires at 5000ms, not one tick earlier, independent of round duration', async () => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     const fill = vi.fn();
     setTimeout(fill, remainingSearchMs(0));
-    await vi.advanceTimersByTimeAsync(649);
+    await vi.advanceTimersByTimeAsync(4999);
     expect(fill).not.toHaveBeenCalled();
     expect(remainingSearchMs(0)).toBe(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(fill).toHaveBeenCalledTimes(1);
-    expect(REAL_PLAYER_WAIT_MS).toBe(650);
-    expect(remainingSearchMs(0, 700)).toBe(0);
+    expect(REAL_PLAYER_WAIT_MS).toBe(5000);
+    expect(remainingSearchMs(0, 5100)).toBe(0);
   });
   it('joins simultaneous calls to a single operation and allows retry', async () => {
     const flight = createSingleFlight();

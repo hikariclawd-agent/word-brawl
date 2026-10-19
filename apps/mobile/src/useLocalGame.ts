@@ -1753,6 +1753,25 @@ export function useLocalGame() {
     setMatchTimeRemaining(matchDurationSeconds ?? 0);
     setLastMatchResult(null);
 
+    if (previousRoom && !previousRoom.isOnline) {
+      // Practice replay must create a new local round. Leaving the room null
+      // and navigating to the lobby renders no playable session on web.
+      const nextLetter = pickNextLetterFromBag(LETTER_POOL);
+      const nextRound = {
+        id: `local-practice-${Date.now()}-${nextLetter}`,
+        letter: nextLetter,
+        roundNumber: 1,
+      };
+      setRoom({ ...previousRoom, status: 'in_round' });
+      setCurrentRound(nextRound);
+      setLetterBag(removeLetterFromBag(LETTER_POOL, nextLetter));
+      setRoundLetter(nextLetter);
+      setTimeRemaining(roundSeconds);
+      setVerdicts(createVerdictsFromAnswers(createEmptyAnswers(), nextLetter, scoringStyle));
+      setScreen('round');
+      return;
+    }
+
     if (shouldCreateFreshOnlineRoom) {
       setIsRoomBusy(true);
       setRoomError('');

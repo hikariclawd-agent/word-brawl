@@ -1,4 +1,4 @@
-export const REAL_PLAYER_WAIT_MS = 650;
+export const REAL_PLAYER_WAIT_MS = 5000;
 
 /** One deadline per open seat; roster updates start the next human-search window. */
 export function remainingSearchMs(startedAt: number, now = Date.now()) {

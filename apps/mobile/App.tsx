@@ -463,6 +463,7 @@ type ReportTarget = {
   title: string;
 };
 type ChallengeResultNotice = {
+  disputeId?: string;
   message: string;
   title: string;
 };
@@ -1517,6 +1518,7 @@ export default function App() {
     const outcome = await withVoteAcknowledgement(() => persistSyncedDisputeVote(disputeId, vote), (result) => {
       const warnings = [result.warning, result.refreshWarning].filter((warning) => warning !== undefined);
       setChallengeResultNotice({
+        disputeId,
         title: 'Vote accepted',
         message: warnings.length
           ? `Your vote was accepted. ${warnings.map((warning) => `${warning.stage === 'refresh' ? 'Results refresh failed' : 'Challenge resolution failed'}: ${warning.message}`).join(' ')} Do not resubmit the vote.`
@@ -1620,6 +1622,13 @@ export default function App() {
       setActiveDisputeNotice(null);
     }
   }, [botPlayers.length, botRoundAnswers, botDifficulty, cachedWordBank, cpuDisputeRoundKey, currentRound?.id, roundHistory.length, roundLetter, screen, scoringStep, selectedCategories, verdicts]);
+
+  const resolvedNoticeDispute = challengeResultNotice?.disputeId
+    ? onlineRevealAnswers.find((answer) => answer.dispute?.id === challengeResultNotice.disputeId)?.dispute
+    : undefined;
+  const challengeNoticeMessage = resolvedNoticeDispute?.status === 'resolved'
+    ? `The server resolved the challenge as ${formatDisputeVote(resolvedNoticeDispute.finalVerdict as DisputeVote | undefined)}.`
+    : challengeResultNotice?.message ?? '';
 
   const disputeNoticeStack = botDisputedCategories.map((category) => ({
     category,
@@ -6671,7 +6680,7 @@ export default function App() {
               <Trophy color={INK} size={34} strokeWidth={3} />
             </View>
             <Text style={styles.heading}>{challengeResultNotice?.title ?? 'Challenge result'}</Text>
-            <Text style={styles.bodyText}>{challengeResultNotice?.message ?? ''}</Text>
+            <Text style={styles.bodyText}>{challengeNoticeMessage}</Text>
             <Pressable
               onPress={() => {
                 gameAudio.playTap();

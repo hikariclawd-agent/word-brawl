@@ -140,7 +140,7 @@ it('actual result Continue clears the notice without submitting another vote', (
   const end = appSource.indexOf('</Modal>', marker) + '</Modal>'.length;
   const clear = vi.fn();
   const scope = { React, Modal: 'modal', View: 'view', Text: 'text', Pressable: 'button', Trophy: 'icon', INK: '', styles: {},
-    challengeResultNotice: { title: 'Vote accepted', message: 'Awaiting server result' }, gameAudio: { playTap: vi.fn() }, setChallengeResultNotice: clear };
+    challengeResultNotice: { title: 'Vote accepted', message: 'Awaiting server result' }, challengeNoticeMessage: 'Awaiting server result', gameAudio: { playTap: vi.fn() }, setChallengeResultNotice: clear };
   const tree = expand(appRenderer('function render() { return (' + appSource.slice(start, end) + '); }', scope)());
   function press(node: any): void {
     if (Array.isArray(node)) { node.forEach(press); return; }

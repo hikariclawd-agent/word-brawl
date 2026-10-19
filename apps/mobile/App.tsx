@@ -7120,6 +7120,18 @@ export default function App() {
             >
               <Text style={styles.primaryButtonText}>View Results</Text>
             </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Play Again"
+              onPress={() => {
+                gameAudio.playStart();
+                setDismissedMatchResultKey(matchResultKey);
+                void resetMatch();
+              }}
+              style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+            >
+              <Text style={styles.secondaryButtonText}>Play Again</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>

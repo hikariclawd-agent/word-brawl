@@ -1,17 +1,18 @@
-# Animal Name Place
+# Word Brawl
 
-Mobile multiplayer word game inspired by Name, Place, Animal, Thing.
+Expo/React Native multiplayer word game inspired by Name, Place, Animal, Thing.
 
 ## Stack
 
 - Expo
 - React Native
 - TypeScript
-- Supabase later for realtime rooms
+- Supabase for realtime rooms, persistence and server-authoritative online scoring
 
-## First Target
+## Game paths
 
-Build a local playable loop before adding online multiplayer.
+- **Local/offline play:** `apps/mobile/src/useLocalGame.ts` owns local match state and orchestration. CPU answer generation, duplicate handling and local CPU scoring live in `apps/mobile/src/localBotRound.ts`.
+- **Online play:** `apps/mobile/src/onlineRooms.ts` coordinates Supabase room operations. Online verdicts, points, disputes and final standings come from authoritative server results; client projections are for presentation and interaction only.
 
 ## Product Docs
 
@@ -30,3 +31,11 @@ corepack pnpm mobile
 ```
 
 Then scan the Expo QR code with Expo Go on Android.
+
+Useful verification commands:
+
+```sh
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm version:check
+```

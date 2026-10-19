@@ -53,6 +53,23 @@ Each manifest records:
 - known limitations
 - installed verification status
 
+### Manifest lifecycle
+
+`source-prepared` is the pre-release state used while a release has not been
+frozen, released, or installed and verified. A source-prepared manifest remains
+editable during that period, and its `databaseMigrationsIncluded` list must
+include every migration present in that release's source.
+
+For a source-prepared manifest, `releaseDate` records the source-preparation
+snapshot date. It does not, by itself, freeze the manifest. Once a release is
+frozen or released, its manifest becomes historical and must not be rewritten
+to include migrations introduced later. Those migrations belong in the manifest
+for the subsequent release.
+
+Repository validation applies the all-migrations check to the current release
+manifest. Historical manifests are retained as release records and are not
+retroactively required to include migrations from later releases.
+
 Do not delete old manifests. They are the release history used to compare versions and track regressions.
 
 ## Change Reports
@@ -82,4 +99,3 @@ To see changes on a phone:
 5. Open Settings, then About, and compare the visible metadata with the release manifest.
 
 Source changes, generated builds, and installed app versions are separate states.
-

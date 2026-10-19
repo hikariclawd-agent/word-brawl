@@ -1,10 +1,13 @@
 import React from 'react';
+import { classifyReview, type ReviewResolution } from '../reviewPresentation';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Minus, UserRound, X } from 'lucide-react-native';
 
 export type ReviewStatus = 'valid' | 'variant' | 'invalid' | 'blank' | 'duplicate' | 'disputed';
 
 export type ReviewAnswer = {
+  resolution: ReviewResolution;
+  onlineAnswerId?: string;
   answer: string;
   category: string;
   id: string;
@@ -90,10 +93,12 @@ const styles = StyleSheet.create({
 });
 
 
-function statusMeta(status: ReviewStatus, isNoAnswer: boolean) {
-  if (isNoAnswer || status === 'blank') return { label: 'No answer', short: '—', color: GREY, Icon: Minus };
-  if (status === 'invalid') return { label: 'Invalid', short: '✕', color: RED, Icon: X };
-  if (status === 'variant' || status === 'duplicate' || status === 'disputed') return { label: 'Needs review', short: '?', color: YELLOW, Icon: CircleHelp };
+function statusMeta(answer: ReviewAnswer) {
+  const kind = classifyReview(answer);
+  if (kind === 'blank') return { label: 'No answer', short: '—', color: GREY, Icon: Minus };
+  if (kind === 'invalid') return { label: 'Invalid', short: '✕', color: RED, Icon: X };
+  if (kind === 'pending') return { label: 'Needs review', short: '?', color: YELLOW, Icon: CircleHelp };
+  if (kind === 'shared') return { label: 'Shared', short: '✓', color: GREEN, Icon: Check };
   return { label: 'Valid', short: '✓', color: GREEN, Icon: Check };
 }
 
@@ -104,8 +109,8 @@ function scoreLabel(points: number, status: ReviewStatus, isNoAnswer: boolean) {
 
 export function ReviewSummary({ answers }: { answers: ReviewAnswer[] }) {
   const counts = answers.reduce((result, answer) => {
-    const meta = statusMeta(answer.status, answer.isNoAnswer);
-    const key = meta.label === 'Valid' ? 'valid' : meta.label === 'Needs review' ? 'pending' : meta.label === 'Invalid' ? 'invalid' : 'blank';
+    const meta = statusMeta(answer);
+    const key = (meta.label === 'Valid' || meta.label === 'Shared') ? 'valid' : meta.label === 'Needs review' ? 'pending' : meta.label === 'Invalid' ? 'invalid' : 'blank';
     result[key] += 1;
     return result;
   }, { valid: 0, pending: 0, invalid: 0, blank: 0 });
@@ -149,7 +154,7 @@ export function CategoryReviewCard({
   onSelectAnswer: (answer: ReviewAnswer) => void;
   selectedAnswerId?: string;
 }) {
-  const hasPending = category.entries.some((entry) => entry.status === 'blank' || entry.status === 'variant' || entry.isNoAnswer);
+  const hasPending = category.entries.some((entry) => classifyReview(entry) === 'pending');
   const CategoryIcon = category.category.toLowerCase().includes('food') ? '♨' : category.category.toLowerCase().includes('place') ? '⌖' : category.category.toLowerCase().includes('animal') ? '♟' : '✦';
 
   return (
@@ -178,7 +183,7 @@ export function CategoryReviewCard({
 }
 
 export function AnswerRow({ answer, selected, onPress }: { answer: ReviewAnswer; selected: boolean; onPress: () => void }) {
-  const meta = statusMeta(answer.status, answer.isNoAnswer);
+  const meta = statusMeta(answer);
   const StatusIcon = meta.Icon;
   return (
     <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.answerRow, selected && styles.answerRowSelected, pressed && styles.pressed]}>
@@ -193,7 +198,7 @@ export function AnswerRow({ answer, selected, onPress }: { answer: ReviewAnswer;
 }
 
 export function AnswerDetails({ answer, challengeControls, onCheckMeaning, onChallenge }: { answer: ReviewAnswer; challengeControls?: React.ReactNode; onCheckMeaning?: () => void; onChallenge?: () => void }) {
-  const meta = statusMeta(answer.status, answer.isNoAnswer);
+  const meta = statusMeta(answer);
   const StatusIcon = meta.Icon;
   return (
     <View style={styles.details}>

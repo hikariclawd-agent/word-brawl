@@ -65,6 +65,20 @@ describe('online reveal agreement rules', () => {
 });
 
 describe('bot scoring evidence', () => {
+  it.each([
+    ['Classic', 'valid'],
+    ['Strict', 'invalid'],
+  ] as const)('applies the documented %s wrong-letter policy', (scoringStyle, expectedVerdict) => {
+    expect(judgeAnswerFromEvidence({
+      answer: 'Antelope',
+      difficulty: 'Normal',
+      knownInCurrentCategory: true,
+      knownInOtherCategory: false,
+      letter: 'B',
+      scoringStyle,
+    })).toBe(expectedVerdict);
+  });
+
   it('keeps a known valid answer valid regardless of strict bot personality', () => {
     expect(judgeAnswerFromEvidence({
       answer: 'Antelope',

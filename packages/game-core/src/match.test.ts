@@ -42,7 +42,7 @@ describe('Word Brawl match state machine', () => {
 
     expect(state.phase).toBe('leaderboard');
     expect(state.players.find((player) => player.id === 'a')?.score).toBe(20);
-    expect(state.players.find((player) => player.id === 'b')?.score).toBe(0);
+    expect(state.players.find((player) => player.id === 'b')?.score).toBe(5);
     expect(state.history).toHaveLength(1);
     expect(state.revision).toBeGreaterThan(0);
   });

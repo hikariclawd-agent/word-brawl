@@ -1,3 +1,4 @@
+import { createVoteFlights, requireVoteResponse, voteFailure, VoteCommandError, type VoteReceipt } from './voteCommands';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { scoreAnswer, type AnswerVerdict } from '@animal-name-place/game-core';
 import { DEFAULT_ROUND_SECONDS, type StarterCategory } from '@animal-name-place/shared';
@@ -313,24 +314,26 @@ function createCommandId() {
   });
 }
 
-async function getAuthoritativeRoundContext(roundId: string) {
-  const { data: round, error: roundError } = await supabase
+async function getAuthoritativeRoundContext(roundId: string, forVote = false) {
+  const { data: round, error: roundError, status: roundStatus } = await supabase
     .from('rounds')
     .select('room_id')
     .eq('id', roundId)
     .single<{ room_id: string }>();
 
   if (roundError) {
+    if (forVote) throw new VoteCommandError(roundError.message, 'round-context', 'rejected', roundStatus, roundError);
     throw new Error(roundError.message);
   }
 
-  const { data: room, error: roomError } = await supabase
+  const { data: room, error: roomError, status: roomStatus } = await supabase
     .from('rooms')
     .select('match_revision')
     .eq('id', round.room_id)
     .single<Pick<RoomRow, 'match_revision'>>();
 
   if (roomError) {
+    if (forVote) throw new VoteCommandError(roomError.message, 'room-context', 'rejected', roomStatus, roomError);
     throw new Error(roomError.message);
   }
 
@@ -610,7 +613,7 @@ async function upsertOnlineRoundScore(roundId: string, playerId: string) {
 }
 
 async function getAnswerId(roundId: string, playerId: string, category: StarterCategory) {
-  const { data, error } = await supabase
+  const { data, error, status } = await supabase
     .from('answers')
     .select('id')
     .eq('round_id', roundId)
@@ -619,7 +622,7 @@ async function getAnswerId(roundId: string, playerId: string, category: StarterC
     .maybeSingle<{ id: string }>();
 
   if (error) {
-    throw new Error(error.message);
+    throw new VoteCommandError(error.message, 'answer-lookup', 'rejected', status, error);
   }
 
   return data?.id ?? null;
@@ -627,33 +630,6 @@ async function getAnswerId(roundId: string, playerId: string, category: StarterC
 
 function getPlayerNameMap(players: RoomPlayerRow[]) {
   return Object.fromEntries(players.map((player) => [player.id, player.display_name]));
-}
-
-async function reactivateRoomPlayer(playerId: string, displayName?: string) {
-  const seenAt = new Date().toISOString();
-  const updates: {
-    display_name?: string;
-    last_seen_at: string;
-    left_at: null;
-    status: 'active';
-  } = {
-    last_seen_at: seenAt,
-    left_at: null,
-    status: 'active',
-  };
-
-  if (displayName?.trim()) {
-    updates.display_name = displayName.trim();
-  }
-
-  const { error } = await supabase
-    .from('room_players')
-    .update(updates)
-    .eq('id', playerId);
-
-  if (error) {
-    throw new Error(error.message);
-  }
 }
 
 async function clearRoomEmptySince(roomId: string) {
@@ -676,6 +652,147 @@ async function touchRoomPlayer(playerId: string) {
   if (error) {
     throw new Error(error.message);
   }
+}
+
+class ResumeCandidateUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ResumeCandidateUnavailableError';
+  }
+}
+
+function isExpectedResumeFailure(error: unknown) {
+  if (error instanceof ResumeCandidateUnavailableError) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  return message === 'room not found or expired.'
+    || message === 'reconnect window expired'
+    || message === 'room permission denied.';
+}
+
+async function touchResumedRoomPlayer(playerId: string, roomId: string) {
+  const { data, error } = await supabase
+    .from('room_players')
+    .update({ last_seen_at: new Date().toISOString() })
+    .eq('id', playerId)
+    .eq('room_id', roomId)
+    .eq('status', 'active')
+    .select('id')
+    .maybeSingle<{ id: string }>();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new ResumeCandidateUnavailableError('The room seat is no longer active.');
+  }
+}
+
+async function reactivateResumedRoomPlayer(
+  room: RoomRow,
+  roomPlayer: RoomPlayerResumeRow,
+  devicePlayerId: string,
+  capabilities: Record<string, string>,
+) {
+  const capability = capabilities[roomPlayer.id];
+
+  if (!capability) {
+    throw new ResumeCandidateUnavailableError('This older room has no management credential.');
+  }
+
+  const { error } = await supabase.rpc('join_managed_room', {
+    p_code: room.code,
+    p_device_player_id: devicePlayerId,
+    p_display_name: roomPlayer.display_name,
+    p_capabilities: { [roomPlayer.id]: capability },
+  });
+
+  if (error) {
+    if (isExpectedResumeFailure(new Error(error.message))) {
+      throw new ResumeCandidateUnavailableError(error.message);
+    }
+    throw new Error(error.message);
+  }
+}
+
+export type ForegroundSeatRecoveryResult =
+  | { status: 'active' }
+  | { reason: string; status: 'unavailable' };
+
+let foregroundRecoveryInFlight: Promise<ForegroundSeatRecoveryResult> | null = null;
+let roomLeaveInFlight = false;
+let roomLifecycleEpoch = 0;
+
+export async function recoverOnlineRoomPlayer({
+  roomId,
+  playerId,
+  displayName,
+}: {
+  roomId: string;
+  playerId: string;
+  displayName?: string;
+}): Promise<ForegroundSeatRecoveryResult> {
+  if (roomLeaveInFlight) {
+    return { reason: 'The room is closing.', status: 'unavailable' };
+  }
+
+  if (foregroundRecoveryInFlight) {
+    return foregroundRecoveryInFlight;
+  }
+
+  const epoch = roomLifecycleEpoch;
+  const request: Promise<ForegroundSeatRecoveryResult> = (async () => {
+    const { data: room, error: roomError } = await supabase
+      .from('rooms')
+      .select('id, code, expires_at, status')
+      .eq('id', roomId)
+      .not('status', 'in', '("finished","expired")')
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle<Pick<RoomRow, 'id' | 'code' | 'expires_at' | 'status'>>();
+
+    if (roomError) {
+      throw new Error(roomError.message);
+    }
+
+    if (!room) {
+      return { reason: 'The room is no longer resumable.', status: 'unavailable' };
+    }
+
+    const capability = (await getRoomCapabilities())[playerId];
+    if (!capability) {
+      return { reason: 'This room has no management credential.', status: 'unavailable' };
+    }
+
+    if (epoch !== roomLifecycleEpoch || roomLeaveInFlight) {
+      return { reason: 'The room recovery request is stale.', status: 'unavailable' };
+    }
+
+    const { error } = await supabase.rpc('join_managed_room', {
+      p_code: room.code,
+      p_device_player_id: await getDevicePlayerId(),
+      p_display_name: displayName?.trim() ?? '',
+      p_capabilities: { [playerId]: capability },
+    });
+
+    if (error) {
+      if (isExpectedResumeFailure(new Error(error.message))) {
+        return { reason: error.message, status: 'unavailable' };
+      }
+      throw new Error(error.message);
+    }
+
+    return { status: 'active' };
+  })();
+
+  foregroundRecoveryInFlight = request;
+  request.then(
+    () => { if (foregroundRecoveryInFlight === request) foregroundRecoveryInFlight = null; },
+    () => { if (foregroundRecoveryInFlight === request) foregroundRecoveryInFlight = null; },
+  );
+  return request;
 }
 
 async function getLatestActiveRound(roomId: string, players: RoomPlayerRow[] = []): Promise<OnlineRoundResult | null> {
@@ -763,8 +880,9 @@ export async function saveOnlineDraftAnswer({
   // server only accepts locked answer submissions through submit_answer_command.
 }
 
-export async function resumeOnlineRoom(): Promise<OnlineResumeResult | null> {
+async function resumeOnlineRoomOnce(): Promise<OnlineResumeResult | null> {
   const devicePlayerId = await getDevicePlayerId();
+  const capabilities = await getRoomCapabilities();
 
   const { data: roomPlayers, error: roomPlayersError } = await supabase
     .from('room_players')
@@ -781,41 +899,65 @@ export async function resumeOnlineRoom(): Promise<OnlineResumeResult | null> {
       continue;
     }
 
-    if (roomPlayer.status === 'disconnected') {
-      await reactivateRoomPlayer(roomPlayer.id, roomPlayer.display_name);
-    }
+    try {
       const { data: room, error: roomError } = await supabase
         .from('rooms')
         .select(ROOM_SELECT_FIELDS)
-      .eq('id', roomPlayer.room_id)
-      .not('status', 'in', '("finished","expired")')
-      .gt('expires_at', new Date().toISOString())
-      .maybeSingle<RoomRow>();
+        .eq('id', roomPlayer.room_id)
+        .not('status', 'in', '("finished","expired")')
+        .gt('expires_at', new Date().toISOString())
+        .maybeSingle<RoomRow>();
 
-    if (roomError) {
-      throw new Error(roomError.message);
+      if (roomError) {
+        throw new Error(roomError.message);
+      }
+
+      if (!room) {
+        continue;
+      }
+
+      const activeRound = await getLatestActiveRound(room.id);
+      const baseRoom = await buildOnlineRoomResult(room, roomPlayer.id, roomPlayer.display_name);
+      const answers = activeRound
+        ? await getOnlinePlayerAnswers(activeRound.id, roomPlayer.id)
+        : {};
+
+      if (roomPlayer.status === 'disconnected') {
+        await reactivateResumedRoomPlayer(room, roomPlayer, devicePlayerId, capabilities);
+      } else {
+        await touchResumedRoomPlayer(roomPlayer.id, room.id);
+      }
+
+      return {
+        ...baseRoom,
+        activeRound,
+        answers,
+      };
+    } catch (error) {
+      if (isExpectedResumeFailure(error)) {
+        continue;
+      }
+      throw error;
     }
-
-    if (!room) {
-      continue;
-    }
-
-    await touchRoomPlayer(roomPlayer.id);
-
-    const activeRound = await getLatestActiveRound(room.id);
-    const baseRoom = await buildOnlineRoomResult(room, roomPlayer.id, roomPlayer.display_name);
-    const answers = activeRound
-      ? await getOnlinePlayerAnswers(activeRound.id, roomPlayer.id)
-      : {};
-
-    return {
-      ...baseRoom,
-      activeRound,
-      answers,
-    };
   }
 
   return null;
+}
+
+let resumeOnlineRoomInFlight: Promise<OnlineResumeResult | null> | null = null;
+
+export function resumeOnlineRoom(): Promise<OnlineResumeResult | null> {
+  if (resumeOnlineRoomInFlight) {
+    return resumeOnlineRoomInFlight;
+  }
+
+  const request = resumeOnlineRoomOnce();
+  resumeOnlineRoomInFlight = request;
+  request.then(
+    () => { if (resumeOnlineRoomInFlight === request) resumeOnlineRoomInFlight = null; },
+    () => { if (resumeOnlineRoomInFlight === request) resumeOnlineRoomInFlight = null; },
+  );
+  return request;
 }
 
 export async function createOnlineRoom(
@@ -884,64 +1026,77 @@ async function finishRoomIfStillEmpty(roomId: string) {
 }
 
 export async function leaveOnlineRoom(playerId: string) {
-  const { data: leavingPlayer, error: leavingPlayerError } = await supabase
-    .from('room_players')
-    .select('room_id')
-    .eq('id', playerId)
-    .maybeSingle<{ room_id: string }>();
+  roomLeaveInFlight = true;
+  roomLifecycleEpoch += 1;
 
-  if (leavingPlayerError) {
-    throw new Error(leavingPlayerError.message);
-  }
-
-  const leftAt = new Date().toISOString();
-  const { error } = await supabase
-    .from('room_players')
-    .update({
-      last_seen_at: leftAt,
-      left_at: leftAt,
-      status: 'disconnected',
-    })
-    .eq('id', playerId);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  setTimeout(() => {
-    supabase
-      .from('room_players')
-      .update({ status: 'left' })
-      .eq('id', playerId)
-      .eq('status', 'disconnected')
-      .lte('left_at', new Date(Date.now() - RECONNECT_GRACE_MS).toISOString())
-      .then(() => undefined);
-  }, RECONNECT_GRACE_MS);
-
-  if (leavingPlayer?.room_id) {
-    const players = await getRoomPlayers(leavingPlayer.room_id);
-
-    if (players.length) {
-      await clearRoomEmptySince(leavingPlayer.room_id);
-      await ensureOnlineRoomHost(leavingPlayer.room_id);
-      return;
+  try {
+    if (foregroundRecoveryInFlight) {
+      await foregroundRecoveryInFlight.catch(() => undefined);
     }
 
-    const emptySince = new Date().toISOString();
-    await supabase
-      .from('rooms')
-      .update({ empty_since: emptySince })
-      .eq('id', leavingPlayer.room_id)
-      .is('empty_since', null)
-      .not('status', 'in', '("finished","expired")');
+    const { data: leavingPlayer, error: leavingPlayerError } = await supabase
+      .from('room_players')
+      .select('room_id')
+      .eq('id', playerId)
+      .maybeSingle<{ room_id: string }>();
+
+    if (leavingPlayerError) {
+      throw new Error(leavingPlayerError.message);
+    }
+
+    const leftAt = new Date().toISOString();
+    const { error } = await supabase
+      .from('room_players')
+      .update({
+        last_seen_at: leftAt,
+        left_at: leftAt,
+        status: 'disconnected',
+      })
+      .eq('id', playerId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
 
     setTimeout(() => {
-      finishRoomIfStillEmpty(leavingPlayer.room_id).catch(() => undefined);
-    }, 30000);
+      supabase
+        .from('room_players')
+        .update({ status: 'left' })
+        .eq('id', playerId)
+        .eq('status', 'disconnected')
+        .lte('left_at', new Date(Date.now() - RECONNECT_GRACE_MS).toISOString())
+        .then(() => undefined);
+    }, RECONNECT_GRACE_MS);
+
+    if (leavingPlayer?.room_id) {
+      const players = await getRoomPlayers(leavingPlayer.room_id);
+
+      if (players.length) {
+        await clearRoomEmptySince(leavingPlayer.room_id);
+        await ensureOnlineRoomHost(leavingPlayer.room_id);
+        return;
+      }
+
+      const emptySince = new Date().toISOString();
+      await supabase
+        .from('rooms')
+        .update({ empty_since: emptySince })
+        .eq('id', leavingPlayer.room_id)
+        .is('empty_since', null)
+        .not('status', 'in', '("finished","expired")');
+
+      setTimeout(() => {
+        finishRoomIfStillEmpty(leavingPlayer.room_id).catch(() => undefined);
+      }, 30000);
+    }
+  } finally {
+    roomLeaveInFlight = false;
   }
 }
 
 export async function markOnlineRoomPlayerDisconnected(playerId: string) {
+  if (roomLeaveInFlight) return;
+
   const disconnectedAt = new Date().toISOString();
   const { error } = await supabase
     .from('room_players')
@@ -952,10 +1107,6 @@ export async function markOnlineRoomPlayerDisconnected(playerId: string) {
   if (error) {
     throw new Error(error.message);
   }
-}
-
-export async function markOnlineRoomPlayerActive(playerId: string, displayName?: string) {
-  await reactivateRoomPlayer(playerId, displayName);
 }
 
 export async function startOnlineRound({
@@ -1524,6 +1675,8 @@ export async function persistOnlineAnswerVerdict({
   return { answeredCount: 0, score: 0 };
 }
 
+const submitVoteFlight = createVoteFlights();
+
 export async function persistOnlineAnswerVote({
   answerOwnerPlayerId,
   category,
@@ -1539,19 +1692,13 @@ export async function persistOnlineAnswerVote({
   voterPlayerId: string;
   vote: OnlineVoteVerdict;
 }) {
-  const answerId = await getAnswerId(roundId, answerOwnerPlayerId, category);
-
-  if (!answerId) {
-    throw new Error('Answer not found for vote.');
-  }
-
-  await persistOnlineAnswerVoteById({
-    answerId,
-    answerOwnerPlayerId,
-    finalVerdict,
-    roundId,
-    voterPlayerId,
-    vote,
+  return submitVoteFlight(`category:${roundId}:${answerOwnerPlayerId}:${category}:${voterPlayerId}`, vote, async () => {
+    let answerId: string | null;
+    try {
+      answerId = await getAnswerId(roundId, answerOwnerPlayerId, category);
+    } catch (error) { throw voteFailure(error, 'answer-lookup'); }
+    if (!answerId) throw new VoteCommandError('Answer not found for vote.', 'answer-lookup', 'rejected');
+    return persistOnlineAnswerVoteById({ answerId, answerOwnerPlayerId, finalVerdict, roundId, vote, voterPlayerId });
   });
 }
 
@@ -1568,20 +1715,25 @@ export async function persistOnlineAnswerVoteById({
   voterPlayerId: string;
   vote: OnlineVoteVerdict;
 }) {
-  const { devicePlayerId, expectedRevision, roomId } = await getAuthoritativeRoundContext(roundId);
-  const { error } = await supabase.rpc('submit_answer_vote_command', {
-    p_answer_id: answerId,
-    p_command_id: createCommandId(),
-    p_device_player_id: devicePlayerId,
-    p_expected_revision: expectedRevision,
-    p_room_id: roomId,
-    p_room_player_id: voterPlayerId,
-    p_verdict: vote,
+  return submitVoteFlight(`answer:${roundId}:${answerId}:${voterPlayerId}`, vote, async () => {
+    let context: Awaited<ReturnType<typeof getAuthoritativeRoundContext>>;
+    try { context = await getAuthoritativeRoundContext(roundId, true); }
+    catch (error) { throw voteFailure(error, 'context'); }
+    const commandId = createCommandId();
+    try {
+      const response = await supabase.rpc('submit_answer_vote_command', {
+        p_answer_id: answerId, p_command_id: commandId,
+        p_device_player_id: context.devicePlayerId, p_expected_revision: context.expectedRevision,
+        p_room_id: context.roomId, p_room_player_id: voterPlayerId, p_verdict: vote,
+      });
+      const data = requireVoteResponse(response, 'cast-vote', commandId);
+      if (data.answer_id !== answerId || typeof data.revision !== 'number' || typeof data.duplicate !== 'boolean') {
+        throw new VoteCommandError('Invalid vote acknowledgement.', 'cast-vote', 'uncertain', response.status, undefined, commandId);
+      }
+      return { accepted: true, commandId, revision: data.revision, duplicate: data.duplicate,
+        resolved: data.resolved === true, finalVerdict: typeof data.final_verdict === 'string' ? data.final_verdict : undefined };
+    } catch (error) { throw voteFailure(error, 'cast-vote', true, commandId); }
   });
-
-  if (error) {
-    throw new Error(error.message);
-  }
 }
 
 export async function openOnlineAnswerDispute({
@@ -1623,39 +1775,37 @@ export async function persistOnlineDisputeVote({
   verdict: OnlineVoteVerdict;
   voterPlayerId: string;
 }) {
-  const { error } = await supabase.rpc('cast_answer_dispute_vote_command', {
-    p_device_player_id: await getDevicePlayerId(),
-    p_dispute_id: disputeId,
-    p_round_id: roundId,
-    p_room_id: roomId,
-    p_verdict: verdict,
-    p_voter_player_id: voterPlayerId,
+  return submitVoteFlight(`dispute:${roomId}:${roundId}:${disputeId}:${voterPlayerId}`, verdict, async () => {
+    let devicePlayerId: string;
+    try { devicePlayerId = await getDevicePlayerId(); }
+    catch (error) { throw voteFailure(error, 'identity'); }
+    try {
+      const response = await supabase.rpc('cast_answer_dispute_vote_command', {
+        p_device_player_id: devicePlayerId, p_dispute_id: disputeId, p_round_id: roundId,
+        p_room_id: roomId, p_verdict: verdict, p_voter_player_id: voterPlayerId,
+      });
+      const data = requireVoteResponse(response, 'cast-dispute-vote');
+      if (data.dispute_id !== disputeId || data.verdict !== verdict) {
+        throw new VoteCommandError('Invalid dispute vote acknowledgement.', 'cast-dispute-vote', 'uncertain', response.status);
+      }
+    } catch (error) { throw voteFailure(error, 'cast-dispute-vote', true); }
+
+    // Acceptance is durable even if the separate resolution request fails.
+    const receipt: VoteReceipt = { accepted: true };
+    try {
+      const response = await supabase.rpc('resolve_answer_dispute_command', {
+        p_device_player_id: devicePlayerId, p_dispute_id: disputeId,
+        p_resolver_player_id: voterPlayerId, p_room_id: roomId, p_round_id: roundId,
+      });
+      const data = requireVoteResponse(response, 'resolve-dispute');
+      if (data.dispute_id !== disputeId || typeof data.resolved !== 'boolean') {
+        throw new VoteCommandError('Invalid dispute resolution acknowledgement.', 'resolve-dispute', 'uncertain', response.status);
+      }
+      receipt.resolved = data.resolved;
+      receipt.finalVerdict = typeof data.final_verdict === 'string' ? data.final_verdict : undefined;
+    } catch (error) { receipt.warning = voteFailure(error, 'resolve-dispute', true); }
+    return receipt;
   });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  const { data: resolution, error: resolutionError } = await supabase.rpc('resolve_answer_dispute_command', {
-    p_device_player_id: await getDevicePlayerId(),
-    p_dispute_id: disputeId,
-    p_resolver_player_id: voterPlayerId,
-    p_room_id: roomId,
-    p_round_id: roundId,
-  });
-
-  if (resolutionError) {
-    throw new Error(resolutionError.message);
-  }
-
-  return resolution as {
-    accepted: boolean;
-    dispute_id: string;
-    final_verdict?: OnlineVoteVerdict;
-    points?: number;
-    resolved: boolean;
-    score?: number;
-  };
 }
 
 export async function finalizeOnlineRoundTimeout({

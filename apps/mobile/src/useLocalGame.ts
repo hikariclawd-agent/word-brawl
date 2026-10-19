@@ -1,6 +1,20 @@
+import { createVoteFlights, describeVoteFailure, voteFailure, VoteCommandError, type VoteOutcome } from './voteCommands';
 import { REAL_PLAYER_WAIT_MS, remainingSearchMs, createSingleFlight } from './liveMatchmaking';
-import { choosePersonalityWord, judgeAnswerFromEvidence } from './botStrategy';
+import { judgeAnswerFromEvidence } from './botStrategy';
 import { pickRoundLetter, scoreAnswer, type AnswerVerdict } from '@animal-name-place/game-core';
+import {
+  createBotRoundAnswers,
+  getKnownCategoriesForAnswer,
+  markDuplicateBotAnswers,
+  scoreBotOwnAnswers,
+  scoreBotRoundAnswers,
+  type AnswersByCategory,
+  type BotDifficulty,
+  type BotPersonality,
+  type BotRoundAnswer,
+} from './localBotRound';
+export { getKnownCategoriesForAnswer } from './localBotRound';
+export type { BotDifficulty, BotPersonality, BotRoundAnswer } from './localBotRound';
 import {
   DEFAULT_ROUND_SECONDS,
   STARTER_CATEGORIES,
@@ -26,7 +40,6 @@ import {
   leaveOnlineRoom,
   openOnlineAnswerDispute,
   persistOnlineDisputeVote,
-  persistOnlineAnswerVote,
   persistOnlineAnswerVoteById,
   resumeOnlineRoom,
   saveOnlineDraftAnswer,
@@ -50,6 +63,11 @@ import {
 import { debugGameError, debugGameEvent } from './devDiagnostics';
 import { getDeadlineRemainingSeconds, getPhaseDeadline, getTimeoutPhase } from './timeoutRules';
 import { emitQaTelemetry } from './qaTelemetry';
+import {
+  createOnlineRevealSnapshotCoordinator,
+  type OnlineRevealSnapshotRequest,
+  type OnlineRevealSnapshotRequestKind,
+} from './onlineRevealSnapshotCoordinator';
 
 export type Screen = 'boot' | 'rules' | 'nameSetup' | 'home' | 'modeDetail' | 'join' | 'lobby' | 'round' | 'reveal' | 'scoring' | 'leaderboard' | 'globalLeaderboard' | 'settings' | 'themes' | 'about';
 export type PlayerProfile = {
@@ -115,6 +133,11 @@ export type RoundSummary = {
 };
 
 export type CurrentRound = OnlineRoundResult | null;
+type OnlineMatchContext = {
+  generation: number;
+  roomId: string;
+  roundId: string | null;
+};
 type OnlineRoundAgreement = Pick<
   OnlineRevealSnapshot,
   | 'activePlayerCount'
@@ -159,32 +182,12 @@ function getOnlineRoundAgreement(snapshot: OnlineRevealSnapshot): OnlineRoundAgr
     voteCount: snapshot.voteCount,
   };
 }
-export type BotDifficulty = 'Easy' | 'Normal' | 'Hard';
-export type BotPersonality =
-  | 'Aggressive'
-  | 'Agreeable'
-  | 'Careful'
-  | 'Chaotic'
-  | 'Generous'
-  | 'Perfect'
-  | 'Scholar'
-  | 'Skeptical'
-  | 'Sloppy'
-  | 'Speedy';
 export type BotPlayer = {
   id: string;
   name: string;
   lastScore: number;
   personality: BotPersonality;
   totalScore: number;
-};
-export type BotRoundAnswer = {
-  answer: string;
-  botId: string;
-  botName: string;
-  category: StarterCategory;
-  points: number;
-  verdict: AnswerVerdict;
 };
 export type ScoringStyle = 'Classic' | 'Strict';
 export type ScoringOwner = 'Self' | 'Opponents';
@@ -239,11 +242,6 @@ const LIVE_TABLE_SETUP: GameModeSetup = {
   scoringOwner: 'Opponents',
   scoringStyle: 'Classic',
 };
-const BOT_DIFFICULTY_PROFILE: Record<BotDifficulty, { fillRate: number; typoRate: number; validRate: number }> = {
-  Easy: { fillRate: 0.55, typoRate: 0.28, validRate: 0.58 },
-  Normal: { fillRate: 0.82, typoRate: 0.1, validRate: 0.84 },
-  Hard: { fillRate: 1, typoRate: 0.01, validRate: 0.97 },
-};
 const BOT_NAMES = [
   'Byte', 'Nova', 'Cipher', 'Orbit', 'Vector', 'Echo', 'Pixel', 'Fuse',
   'Quanta', 'Nexus', 'Sable', 'Juno', 'Vanta', 'Kairo', 'Zeno', 'Halo',
@@ -260,74 +258,6 @@ const BOT_PERSONALITIES: BotPersonality[] = [
   'Speedy',
   'Careful',
 ];
-const BOT_PERSONALITY_PROFILE: Record<BotPersonality, {
-  challengeRateMultiplier: number;
-  fillRateBoost: number;
-  typoRateMultiplier: number;
-  validRateBoost: number;
-}> = {
-  Aggressive: {
-    challengeRateMultiplier: 1.7,
-    fillRateBoost: 0.04,
-    typoRateMultiplier: 0.8,
-    validRateBoost: 0.02,
-  },
-  Agreeable: {
-    challengeRateMultiplier: 0.35,
-    fillRateBoost: 0,
-    typoRateMultiplier: 0.9,
-    validRateBoost: 0.03,
-  },
-  Careful: {
-    challengeRateMultiplier: 1.05,
-    fillRateBoost: -0.02,
-    typoRateMultiplier: 0.35,
-    validRateBoost: 0.12,
-  },
-  Chaotic: {
-    challengeRateMultiplier: 1,
-    fillRateBoost: -0.02,
-    typoRateMultiplier: 1.8,
-    validRateBoost: -0.08,
-  },
-  Generous: {
-    challengeRateMultiplier: 0.25,
-    fillRateBoost: 0,
-    typoRateMultiplier: 0.9,
-    validRateBoost: 0.07,
-  },
-  Sloppy: {
-    challengeRateMultiplier: 0.85,
-    fillRateBoost: -0.05,
-    typoRateMultiplier: 2.6,
-    validRateBoost: -0.14,
-  },
-  Perfect: {
-    challengeRateMultiplier: 1.15,
-    fillRateBoost: 0.08,
-    typoRateMultiplier: 0,
-    validRateBoost: 0.2,
-  },
-  Scholar: {
-    challengeRateMultiplier: 1.25,
-    fillRateBoost: 0.06,
-    typoRateMultiplier: 0.2,
-    validRateBoost: 0.16,
-  },
-  Skeptical: {
-    challengeRateMultiplier: 1.45,
-    fillRateBoost: 0.02,
-    typoRateMultiplier: 0.7,
-    validRateBoost: -0.03,
-  },
-  Speedy: {
-    challengeRateMultiplier: 0.75,
-    fillRateBoost: 0.1,
-    typoRateMultiplier: 1.4,
-    validRateBoost: -0.02,
-  },
-};
-
 function getUnlockedAchievementLabels(profile: PlayerProfile) {
   const unlockedLabels: string[] = [];
 
@@ -419,87 +349,6 @@ function getNewAchievementLabels(previousProfile: PlayerProfile, nextProfile: Pl
   return getUnlockedAchievementLabels(nextProfile).filter((label) => !previousLabels.includes(label));
 }
 
-const BOT_WORD_BANK: Record<StarterCategory, string[]> = {
-  Animal: [
-    'Antelope', 'Bear', 'Cat', 'Dog', 'Eagle', 'Falcon', 'Goat', 'Horse', 'Iguana', 'Jaguar',
-    'Koala', 'Lion', 'Monkey', 'Newt', 'Otter', 'Panda', 'Quail', 'Rabbit', 'Snake', 'Tiger',
-    'Urial', 'Viper', 'Wolf', 'Xerus', 'Yak', 'Zebra',
-    'Aardvark', 'Buffalo', 'Cheetah', 'Dolphin', 'Elephant', 'Fox', 'Giraffe', 'Hyena', 'Impala', 'Jackal',
-    'Kangaroo', 'Leopard', 'Mongoose', 'Narwhal', 'Ostrich', 'Penguin', 'Quokka', 'Rhino', 'Shark', 'Tortoise',
-    'Uakari', 'Vulture', 'Whale', 'Xenops', 'Yellowhammer', 'Zebu',
-    'Alpaca', 'Baboon', 'Camel', 'Deer', 'Emu', 'Ferret', 'Gazelle', 'Hedgehog', 'Ibex', 'Jellyfish',
-    'Kingfisher', 'Lemur', 'Meerkat', 'Numbat', 'Octopus', 'Peacock', 'Quetzal', 'Raccoon', 'Seal', 'Toucan',
-    'Urchin', 'Vicuna', 'Walrus', 'Xolo', 'Yabby', 'Zorilla',
-  ],
-  Name: [
-    'Alex', 'Bella', 'Caleb', 'Diana', 'Ethan', 'Fatima', 'Grace', 'Hassan', 'Isaac', 'Jade',
-    'Kofi', 'Lola', 'Maya', 'Nadia', 'Omar', 'Peter', 'Queenie', 'Rita', 'Samuel', 'Tunde',
-    'Uche', 'Victor', 'Wendy', 'Xavier', 'Yara', 'Zara',
-    'Amina', 'Brian', 'Chika', 'Daniel', 'Esther', 'Femi', 'Gloria', 'Hannah', 'Ibrahim', 'James',
-    'Kwame', 'Linda', 'Michael', 'Nana', 'Olivia', 'Priya', 'Quincy', 'Rachel', 'Sarah', 'Theo',
-    'Uma', 'Vanessa', 'William', 'Ximena', 'Yusuf', 'Zainab',
-    'Ada', 'Bola', 'Chioma', 'David', 'Ebere', 'Freya', 'George', 'Helen', 'Ife', 'Jonah',
-    'Keisha', 'Luke', 'Malik', 'Naomi', 'Oscar', 'Paula', 'Quinn', 'Ruth', 'Sade', 'Tariq',
-    'Uriel', 'Vera', 'Wale', 'Xena', 'Yemi', 'Zion', 'Joe',
-  ],
-  Place: [
-    'Accra', 'Berlin', 'Cairo', 'Durban', 'Enugu', 'Florence', 'Ghana', 'Harare', 'Ibadan', 'Jakarta',
-    'Kano', 'Lagos', 'Madrid', 'Nairobi', 'Oslo', 'Paris', 'Qatar', 'Rome', 'Seoul', 'Tokyo',
-    'Uyo', 'Vienna', 'Warsaw', 'Xian', 'Yaounde', 'Zurich',
-    'Abuja', 'Bradford', 'Cape Town', 'Dakar', 'Edinburgh', 'Freetown', 'Geneva', 'Houston', 'Istanbul', 'Johannesburg',
-    'Kigali', 'London', 'Manchester', 'Naples', 'Oxford', 'Pretoria', 'Quebec', 'Rotterdam', 'Sydney', 'Toronto',
-    'Uganda', 'Venice', 'Wembley', 'Xiamen', 'York', 'Zambia',
-    'Athens', 'Bristol', 'Chicago', 'Delhi', 'Edo', 'Frankfurt', 'Gaborone', 'Helsinki', 'Ilorin', 'Kaduna',
-    'Kyoto', 'Lisbon', 'Milan', 'New York', 'Orlando', 'Porto', 'Queens', 'Rwanda', 'Stockholm', 'Tripoli',
-    'Utrecht', 'Valencia', 'Winnipeg', 'Xalapa', 'Yokohama', 'Zimbabwe',
-  ],
-  Brand: [
-    'Apple', 'Bose', 'Canon', 'Disney', 'Ebay', 'Fanta', 'Google', 'Honda', 'Intel', 'Jeep',
-    'Kia', 'Lego', 'Meta', 'Nike', 'Oppo', 'Pepsi', 'Quaker', 'Rolex', 'Samsung', 'Toyota',
-    'Uber', 'Visa', 'Walmart', 'Xbox', 'Yamaha', 'Zara',
-    'Adidas', 'Burger King', 'Coca Cola', 'Dell', 'Emirates', 'Ford', 'Gucci', 'HP', 'Instagram', 'Jordan',
-    'KFC', 'LinkedIn', 'Mercedes', 'Netflix', 'Oracle', 'PlayStation', 'Qantas', 'Red Bull', 'Spotify', 'Tesla',
-    'Under Armour', 'Vans', 'WhatsApp', 'Xiaomi', 'YouTube', 'Zoom',
-    'Acer', 'Balenciaga', 'Cadbury', 'Dominos', 'Etsy', 'Fila', 'Glo', 'Huawei', 'Ikea', 'Jumia',
-    'Kodak', 'Lacoste', 'Microsoft', 'Nvidia', 'Olympus', 'Prada', 'Qualcomm', 'Reebok', 'Shell', 'TikTok',
-    'Unilever', 'Virgin', 'WordPress', 'Xfinity', 'Yelp', 'Zalando',
-  ],
-  Food: [
-    'Apple', 'Bread', 'Cake', 'Donut', 'Egg', 'Fish', 'Gari', 'Honey', 'Icecream', 'Jollof',
-    'Kebab', 'Lemon', 'Mango', 'Noodles', 'Okra', 'Pizza', 'Quiche', 'Rice', 'Soup', 'Taco',
-    'Udon', 'Vanilla', 'Waffles', 'Xigua', 'Yam', 'Ziti',
-    'Avocado', 'Beans', 'Chicken', 'Dumpling', 'Egusi', 'Falafel', 'Granola', 'Hotdog', 'Indomie', 'Jambalaya',
-    'Kiwi', 'Lasagne', 'Moi Moi', 'Nachos', 'Oats', 'Pasta', 'Quesadilla', 'Ramen', 'Salad', 'Toast',
-    'Ugba', 'Vegetables', 'Watermelon', 'Xacuti', 'Yoghurt', 'Zucchini',
-    'Akara', 'Burger', 'Couscous', 'Dates', 'Eba', 'Fries', 'Grapes', 'Hummus', 'Idli', 'Jam',
-    'Kale', 'Lentils', 'Meatballs', 'Nutmeg', 'Orange', 'Plantain', 'Quinoa', 'Risotto', 'Stew', 'Tuna',
-    'Ukwa', 'Vindaloo', 'Wrap', 'Xnipec', 'Yassa', 'Zobo',
-  ],
-  Job: [
-    'Artist', 'Baker', 'Chef', 'Doctor', 'Engineer', 'Farmer', 'Guard', 'Host', 'Inspector', 'Judge',
-    'Keeper', 'Lawyer', 'Mechanic', 'Nurse', 'Officer', 'Pilot', 'Quartermaster', 'Ranger', 'Singer', 'Teacher',
-    'Umpire', 'Vendor', 'Writer', 'Xylophonist', 'Youtuber', 'Zookeeper',
-    'Accountant', 'Barber', 'Carpenter', 'Dentist', 'Electrician', 'Firefighter', 'Guide', 'Hairdresser', 'Illustrator', 'Journalist',
-    'Knight', 'Lecturer', 'Manager', 'Nutritionist', 'Optician', 'Producer', 'Quality Inspector', 'Receptionist', 'Scientist', 'Tailor',
-    'Usher', 'Vet', 'Waiter', 'Xray Technician', 'Yoga Instructor', 'Zoologist',
-    'Actor', 'Banker', 'Courier', 'Designer', 'Editor', 'Florist', 'Geologist', 'Historian', 'Importer', 'Janitor',
-    'Keyholder', 'Librarian', 'Musician', 'Novelist', 'Operator', 'Photographer', 'Quantity Surveyor', 'Researcher', 'Surgeon', 'Translator',
-    'Undertaker', 'Videographer', 'Welder', 'Xray Operator', 'Youth Worker', 'Zumba Instructor',
-  ],
-  Object: [
-    'Apple', 'Book', 'Chair', 'Drum', 'Envelope', 'Fork', 'Guitar', 'Hammer', 'Ink', 'Jacket',
-    'Kettle', 'Lamp', 'Mirror', 'Notebook', 'Orange', 'Phone', 'Quilt', 'Radio', 'Spoon', 'Table',
-    'Umbrella', 'Violin', 'Wallet', 'Xbox', 'Yarn', 'Zip',
-    'Anchor', 'Bottle', 'Camera', 'Door', 'Eraser', 'Flag', 'Glasses', 'Helmet', 'Iron', 'Jar',
-    'Key', 'Laptop', 'Microphone', 'Needle', 'Oven', 'Pencil', 'Queue Ticket', 'Remote', 'Suitcase', 'Torch',
-    'Uniform', 'Vase', 'Watch', 'Xylophone', 'Yo-yo', 'Zipper',
-    'Arrow', 'Basket', 'Candle', 'Desk', 'Earphones', 'Fan', 'Globe', 'Hat', 'Icebox', 'Jug',
-    'Knife', 'Ladder', 'Mug', 'Net', 'Oil Lamp', 'Plate', 'Quartz', 'Ring', 'Scissors', 'Towel',
-    'USB', 'Vacuum', 'Whistle', 'Xerox', 'Yoyo', 'Ziplock',
-  ],
-};
-
-type AnswersByCategory = Record<StarterCategory, string>;
 type VerdictsByCategory = Record<StarterCategory, AnswerVerdict>;
 
 function createEmptyAnswers(): AnswersByCategory {
@@ -571,57 +420,8 @@ function getRemainingSeconds(endsAt?: string, fallbackSeconds = DEFAULT_ROUND_SE
   return Math.max(0, Math.ceil((new Date(endsAt).getTime() - Date.now()) / 1000));
 }
 
-function pickBotAnswer(category: StarterCategory, letter: string, personality: BotPersonality) {
-  const options = BOT_WORD_BANK[category].filter((word) => word.toUpperCase().startsWith(letter));
-
-  if (!options.length) {
-    return '';
-  }
-
-  return choosePersonalityWord(options, personality);
-}
-
-function normalizeAnswer(answer: string) {
-  return answer.trim().toUpperCase().replace(/\s+/g, ' ');
-}
-
-export function getKnownCategoriesForAnswer(answer: string) {
-  const normalizedAnswer = normalizeAnswer(answer);
-
-  if (!normalizedAnswer) {
-    return [] as StarterCategory[];
-  }
-
-  return STARTER_CATEGORIES.filter((category) => (
-    BOT_WORD_BANK[category].some((word) => normalizeAnswer(word) === normalizedAnswer)
-  ));
-}
-
 function createAnonymousName() {
   return `Anonymous${Math.floor(100 + Math.random() * 900)}`;
-}
-
-function createTypo(answer: string) {
-  if (answer.length < 4) {
-    return `${answer}${answer.at(-1) ?? ''}`;
-  }
-
-  const typoIndex = Math.max(1, Math.floor(Math.random() * answer.length));
-  const typoType = Math.floor(Math.random() * 3);
-
-  if (typoType === 0) {
-    return `${answer.slice(0, typoIndex)}${answer.slice(typoIndex + 1)}`;
-  }
-
-  if (typoType === 1) {
-    return `${answer.slice(0, typoIndex)}${answer[typoIndex]}${answer.slice(typoIndex)}`;
-  }
-
-  if (typoIndex >= answer.length - 1) {
-    return `${answer}${answer.at(-1) ?? ''}`;
-  }
-
-  return `${answer.slice(0, typoIndex)}${answer[typoIndex + 1]}${answer[typoIndex]}${answer.slice(typoIndex + 2)}`;
 }
 
 function pickBotNames(count: number, currentNames: readonly string[] = []) {
@@ -646,10 +446,6 @@ function pickBotPersonalities(count: number, currentPersonalities: readonly BotP
   }
 
   return nextPersonalities;
-}
-
-function clampRate(value: number) {
-  return Math.max(0, Math.min(1, value));
 }
 
 function normalizeLetterBag(storedLetters: unknown) {
@@ -677,138 +473,15 @@ function removeLetterFromBag(availableLetters: readonly string[], usedLetter: st
   return nextLetters.length ? nextLetters : LETTER_POOL;
 }
 
-function createBotRoundAnswers(
-  botCount: number,
-  botNames: readonly string[],
-  botPersonalities: readonly BotPersonality[],
-  categories: readonly StarterCategory[],
-  difficulty: BotDifficulty,
-  letter: string,
-): BotRoundAnswer[] {
-  const profile = BOT_DIFFICULTY_PROFILE[difficulty];
-
-  return Array.from({ length: botCount }).flatMap((_, botIndex) => (
-    categories.map((category) => {
-      const botId = `bot-${botIndex + 1}`;
-      const botName = botNames[botIndex] ?? `CPU ${botIndex + 1}`;
-      const personalityProfile = BOT_PERSONALITY_PROFILE[botPersonalities[botIndex] ?? 'Agreeable'];
-      const fillRate = clampRate(profile.fillRate + personalityProfile.fillRateBoost);
-      const typoRate = clampRate(profile.typoRate * personalityProfile.typoRateMultiplier);
-
-      if (Math.random() > fillRate) {
-        return {
-          answer: '',
-          botId,
-          botName,
-          category,
-          points: 0,
-          verdict: 'blank' as const,
-        };
-      }
-
-      const cleanAnswer = pickBotAnswer(category, letter, botPersonalities[botIndex] ?? 'Agreeable');
-      const hasTypo = Boolean(cleanAnswer) && Math.random() <= typoRate;
-      const answer = hasTypo ? createTypo(cleanAnswer) : cleanAnswer;
-      const verdict: AnswerVerdict = 'blank';
-
-      return {
-        answer,
-        botId,
-        botName,
-        category,
-        points: scoreAnswer({ verdict }),
-        verdict,
-      };
-    })
-  ));
-}
-
-function markDuplicateBotAnswers(
-  botAnswers: readonly BotRoundAnswer[],
-  playerAnswers: AnswersByCategory,
-  categories: readonly StarterCategory[],
-) {
-  const duplicateKeys = new Set<string>();
-
-  categories.forEach((category) => {
-    const answerGroups = new Map<string, string[]>();
-    const playerAnswer = normalizeAnswer(playerAnswers[category]);
-
-    if (playerAnswer) {
-      answerGroups.set(playerAnswer, ['player']);
-    }
-
-    botAnswers
-      .filter((botAnswer) => botAnswer.category === category && botAnswer.answer.trim())
-      .forEach((botAnswer) => {
-        const normalizedAnswer = normalizeAnswer(botAnswer.answer);
-        const key = `${botAnswer.botId}:${category}`;
-        answerGroups.set(normalizedAnswer, [...(answerGroups.get(normalizedAnswer) ?? []), key]);
-      });
-
-    answerGroups.forEach((owners) => {
-      if (owners.length > 1) {
-        owners.filter((owner) => owner !== 'player').forEach((owner) => duplicateKeys.add(owner));
-      }
-    });
-  });
-
-  return botAnswers.map((botAnswer) => {
-    if (!duplicateKeys.has(`${botAnswer.botId}:${botAnswer.category}`)) {
-      return botAnswer;
-    }
-
-    return botAnswer.verdict === 'blank'
-      ? botAnswer
-      : {
-        ...botAnswer,
-        points: scoreAnswer({ verdict: 'duplicate' }),
-        verdict: 'duplicate' as const,
-      };
-  });
-}
-
-function scoreBotOwnAnswers(
-  botAnswers: readonly BotRoundAnswer[],
-  letter: string,
-  scoringStyle: ScoringStyle,
-) {
-  return botAnswers.map((botAnswer) => {
-    const answer = botAnswer.answer.trim();
-
-    if (!answer || botAnswer.verdict !== 'blank') {
-      return botAnswer;
-    }
-
-    let verdict: AnswerVerdict = 'variant';
-
-    if (scoringStyle === 'Strict' && letter && !answer.toUpperCase().startsWith(letter)) {
-      verdict = 'invalid';
-    } else if (getKnownCategoriesForAnswer(answer).includes(botAnswer.category)) {
-      verdict = 'valid';
-    }
-
-    return {
-      ...botAnswer,
-      points: scoreAnswer({ verdict }),
-      verdict,
-    };
-  });
-}
-
-function scoreBotRoundAnswers(botCount: number, answers: readonly BotRoundAnswer[]) {
-  return Array.from({ length: botCount }, (_, botIndex) => {
-    const botId = `bot-${botIndex + 1}`;
-    return answers
-      .filter((answer) => answer.botId === botId)
-      .reduce((total, answer) => total + answer.points, 0);
-  });
-}
-
 export function useLocalGame() {
+  const disputeVoteFlight = useRef(createVoteFlights());
+  const completedMatchRecordedRef = useRef(false);
   const draftSaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const roundSubmissionRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const roundSubmissionOwnerRef = useRef<symbol | null>(null);
   const timeoutFinalizationRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const timeoutFinalizationOwnerRef = useRef<symbol | null>(null);
+  const onlineRevealSnapshotCoordinatorRef = useRef(createOnlineRevealSnapshotCoordinator());
   const matchGenerationRef = useRef(0);
   const lastOnlineMatchSyncAtRef = useRef(0);
   const [screen, setScreen] = useState<Screen>('boot');
@@ -825,13 +498,14 @@ export function useLocalGame() {
   const [liveTableCountdownRemaining, setLiveTableCountdownRemaining] = useState<number | null>(null);
   const [liveTableAutoStartKey, setLiveTableAutoStartKey] = useState('');
   const joinFlight = useRef(createSingleFlight());
+  const matchResetInFlightRef = useRef<Promise<void> | null>(null);
   const liveAdvanceInFlight = useRef(false);
   const liveRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveBrawlInFlight = useRef(false);
   const editSnapshotRef = useRef<OnlineRoomSettings | null>(null);
   const [isEditingBrawl, setIsEditingBrawl] = useState(false);
   const [isSavingBrawl, setIsSavingBrawl] = useState(false);
-  const [currentRound, setCurrentRound] = useState<CurrentRound>(null);
+  const [currentRound, setCurrentRoundState] = useState<CurrentRound>(null);
   const [roundLetter, setRoundLetter] = useState('');
   const [manualRoundLetter, setManualRoundLetter] = useState('');
   const [letterBag, setLetterBag] = useState<string[]>(LETTER_POOL);
@@ -850,6 +524,7 @@ export function useLocalGame() {
   const [botRoundAnswers, setBotRoundAnswers] = useState<BotRoundAnswer[]>([]);
   const [localMatchStandings, setLocalMatchStandings] = useState<MatchStandingEntry[]>([]);
   const [onlineRevealAnswers, setOnlineRevealAnswers] = useState<OnlineRevealAnswer[]>([]);
+  const [onlineAnswerVoteRefreshWarning, setOnlineAnswerVoteRefreshWarning] = useState<string | null>(null);
   const [onlineMatchStandings, setOnlineMatchStandings] = useState<OnlineMatchStanding[]>([]);
   const [onlinePlayerRoundHistory, setOnlinePlayerRoundHistory] = useState<OnlinePlayerRoundSummary[]>([]);
   const [onlineRoundScores, setOnlineRoundScores] = useState<OnlineRoundScore[]>([]);
@@ -866,6 +541,89 @@ export function useLocalGame() {
   const [playerProfile, setPlayerProfile] = useState<PlayerProfile>(DEFAULT_PROFILE);
   const [lastMatchResult, setLastMatchResult] = useState<MatchResult | null>(null);
   const [matchResetToken, setMatchResetToken] = useState(0);
+  const onlineMatchContextRef = useRef<OnlineMatchContext | null>(null);
+  onlineMatchContextRef.current = room?.isOnline && room.id
+    ? { generation: matchGenerationRef.current, roomId: room.id, roundId: currentRound?.id ?? null }
+    : null;
+
+  function isCurrentOnlineMatchContext(context: OnlineMatchContext) {
+    const current = onlineMatchContextRef.current;
+    return matchGenerationRef.current === context.generation
+      && current?.generation === context.generation
+      && current.roomId === context.roomId
+      && current.roundId === context.roundId;
+  }
+
+  function getOnlineLifecycleContext() {
+    return {
+      generation: matchGenerationRef.current,
+      roomId: onlineMatchContextRef.current?.roomId ?? null,
+    };
+  }
+
+  const onlineRevealSnapshotKey = room?.isOnline && room.id && currentRound?.id
+    ? `${matchGenerationRef.current}:${room.id}:${currentRound.id}`
+    : null;
+  onlineRevealSnapshotCoordinatorRef.current.ensureKey(onlineRevealSnapshotKey);
+
+  function invalidateOnlineRevealSnapshotRequests() {
+    onlineRevealSnapshotCoordinatorRef.current.invalidate();
+  }
+
+  function beginOnlineRevealMutation() {
+    return onlineRevealSnapshotCoordinatorRef.current.beginMutation();
+  }
+
+  function finishOnlineRevealMutation(mutationEpoch: number) {
+    onlineRevealSnapshotCoordinatorRef.current.finishMutation(mutationEpoch);
+  }
+
+  function invalidateTimeoutFinalization() {
+    timeoutFinalizationRef.current = null;
+    timeoutFinalizationOwnerRef.current = null;
+  }
+
+  function beginOnlineRevealSnapshotRequest(
+    roomId: string,
+    roundId: string,
+    kind: OnlineRevealSnapshotRequestKind = 'poll',
+  ): OnlineRevealSnapshotRequest {
+    const key = `${matchGenerationRef.current}:${roomId}:${roundId}`;
+    return onlineRevealSnapshotCoordinatorRef.current.beginRequest(key, kind);
+  }
+
+  function isCurrentOnlineRevealSnapshotRequest(request: OnlineRevealSnapshotRequest) {
+    return onlineRevealSnapshotCoordinatorRef.current.isCurrent(request);
+  }
+
+  async function readOnlineRevealSnapshot(
+    roomId: string,
+    roundId: string,
+    kind: OnlineRevealSnapshotRequestKind = 'poll',
+  ) {
+    const request = beginOnlineRevealSnapshotRequest(roomId, roundId, kind);
+
+    try {
+      const snapshot = await getOnlineRevealSnapshot(roomId, roundId);
+      return {
+        request,
+        snapshot: isCurrentOnlineRevealSnapshotRequest(request) ? snapshot : null,
+      };
+    } catch (error) {
+      if (!isCurrentOnlineRevealSnapshotRequest(request)) {
+        return { request, snapshot: null };
+      }
+      throw error;
+    }
+  }
+
+  function setCurrentRound(nextRound: CurrentRound) {
+    if (currentRound?.id !== nextRound?.id) {
+      invalidateTimeoutFinalization();
+    }
+    invalidateOnlineRevealSnapshotRequests();
+    setCurrentRoundState(nextRound);
+  }
 
   const cleanedRoomCode = useMemo(() => roomCodeInput.trim().toUpperCase(), [roomCodeInput]);
   const answeredCount = useMemo(
@@ -873,8 +631,10 @@ export function useLocalGame() {
     [answers, selectedCategories],
   );
   const totalScore = useMemo(
-    () => selectedCategories.reduce((score, category) => score + scoreAnswer({ verdict: verdicts[category] }), 0),
-    [selectedCategories, verdicts],
+    () => room?.isOnline
+      ? onlineRoundScores.find((roundScore) => roundScore.playerId === room.playerId)?.score ?? 0
+      : selectedCategories.reduce((score, category) => score + scoreAnswer({ verdict: verdicts[category] }), 0),
+    [onlineRoundScores, room?.isOnline, room?.playerId, selectedCategories, verdicts],
   );
   const lifetimeScore = useMemo(
     () => roundHistory.reduce((score, round) => score + round.score, 0),
@@ -940,12 +700,13 @@ export function useLocalGame() {
         if (resumedRoom) {
           restoreOnlineRoom(resumedRoom);
         } else {
-          setScreen(cleanStoredName ? 'home' : 'nameSetup');
+          setScreen(hasStoredPlayerName || playerName.trim() ? 'home' : 'nameSetup');
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (isMounted) {
-          setScreen('rules');
+          setRoomError(error instanceof Error ? error.message : 'Could not restore the previous session.');
+          setScreen(hasStoredPlayerName || playerName.trim() ? 'home' : 'nameSetup');
         }
       });
 
@@ -1082,6 +843,11 @@ export function useLocalGame() {
     }
 
     let isMounted = true;
+    const context: OnlineMatchContext = {
+      generation: matchGenerationRef.current,
+      roomId: room.id,
+      roundId: currentRound?.id ?? null,
+    };
 
     async function syncRoomState() {
       if (!room?.id) {
@@ -1091,7 +857,7 @@ export function useLocalGame() {
       try {
         const snapshot = await getOnlineRoomSnapshot(room.id, room.playerId);
 
-        if (!isMounted) {
+        if (!isMounted || !isCurrentOnlineMatchContext(context)) {
           return;
         }
 
@@ -1141,6 +907,9 @@ export function useLocalGame() {
         if (!snapshot.activeRound) {
           if ((screen === 'reveal' || screen === 'scoring') && (snapshot.status === 'lobby' || snapshot.status === 'finished')) {
             const syncedMatchState = await syncOnlineMatchState();
+            if (!isMounted || !syncedMatchState.isCurrent || !isCurrentOnlineMatchContext(context)) {
+              return;
+            }
             const syncedPlayerStanding = syncedMatchState.standings.find((standing) => (
               standing.playerId === room.playerId
             ));
@@ -1190,9 +959,21 @@ export function useLocalGame() {
           return;
         }
 
+        const hydrationContext: OnlineMatchContext = {
+          ...context,
+          roundId: snapshot.activeRound.id,
+        };
         const restoredAnswers = room.playerId
           ? await getOnlinePlayerAnswers(snapshot.activeRound.id, room.playerId)
           : {};
+        const currentContext = onlineMatchContextRef.current;
+        if (
+          !isMounted
+          || !isCurrentOnlineMatchContext(context)
+          || (currentContext?.roundId !== null && currentContext?.roundId !== hydrationContext.roundId)
+        ) {
+          return;
+        }
         const nextAnswers = {
           ...createEmptyAnswers(),
           ...restoredAnswers,
@@ -1220,7 +1001,7 @@ export function useLocalGame() {
         setRoomError('');
         setScreen(snapshot.activeRound.status === 'revealing' ? 'reveal' : 'round');
       } catch (error) {
-        if (isMounted) {
+        if (isMounted && isCurrentOnlineMatchContext(context)) {
           setRoomError(error instanceof Error ? error.message : 'Could not sync session.');
         }
       }
@@ -1383,6 +1164,7 @@ export function useLocalGame() {
 
     setRoomCodeInput(onlineRoom.code);
     setOnlineRevealAnswers([]);
+    setOnlineAnswerVoteRefreshWarning(null);
     setOnlineMatchStandings([]);
     setOnlinePlayerRoundHistory([]);
     setOnlineRoundScores([]);
@@ -1430,6 +1212,11 @@ export function useLocalGame() {
     }
 
     let isMounted = true;
+    const context: OnlineMatchContext = {
+      generation: matchGenerationRef.current,
+      roomId: room.id,
+      roundId: currentRound.id,
+    };
 
     async function syncRevealSnapshot() {
       if (!room?.id || !currentRound?.id) {
@@ -1437,24 +1224,34 @@ export function useLocalGame() {
       }
 
       try {
-        const snapshot = await getOnlineRevealSnapshot(room.id, currentRound.id);
+        const { request, snapshot } = await readOnlineRevealSnapshot(room.id, currentRound.id);
 
-        if (!isMounted) {
+        if (!isMounted || !snapshot || !isCurrentOnlineRevealSnapshotRequest(request)) {
           return;
         }
 
-        setOnlineRevealAnswers(snapshot.answers);
+        let botSnapshot: OnlineBotRoundSnapshot | null = null;
         if (room.visibility === 'public' && (snapshot.submittedPlayerCount >= snapshot.activePlayerCount || timeRemaining <= 0)) {
-          const botSnapshot = await getOnlineBotRoundSnapshot(room.id, currentRound.id);
-          if (!isMounted) return;
-          applyOnlineBotSnapshot(botSnapshot);
+          botSnapshot = await getOnlineBotRoundSnapshot(room.id, currentRound.id);
         }
+        let syncedMatchState: Awaited<ReturnType<typeof syncOnlineMatchState>> | null = null;
         if (
           screen === 'leaderboard'
           || Date.now() - lastOnlineMatchSyncAtRef.current >= MATCH_STATE_SYNC_INTERVAL_MS
         ) {
+          syncedMatchState = await syncOnlineMatchState(false);
+        }
+        if (!isMounted || !isCurrentOnlineRevealSnapshotRequest(request)) {
+          return;
+        }
+        setOnlineRevealAnswers(snapshot.answers);
+        setOnlineAnswerVoteRefreshWarning(null);
+        if (botSnapshot) {
+          applyOnlineBotSnapshot(botSnapshot);
+        }
+        if (syncedMatchState) {
+          applyOnlineMatchState(syncedMatchState.standings, syncedMatchState.history);
           lastOnlineMatchSyncAtRef.current = Date.now();
-          await syncOnlineMatchState();
         }
         setOnlineRoundScores(snapshot.scores);
         setOnlineRoundAgreement(getOnlineRoundAgreement(snapshot));
@@ -1479,7 +1276,7 @@ export function useLocalGame() {
           voteCount: snapshot.voteCount,
         });
       } catch (error) {
-        if (isMounted) {
+        if (isMounted && isCurrentOnlineMatchContext(context)) {
           setRoomError(error instanceof Error ? error.message : 'Could not sync scores.');
           emitQaTelemetry('client.sync-error', {
             message: error instanceof Error ? error.message : 'Could not sync scores.',
@@ -1548,19 +1345,10 @@ export function useLocalGame() {
     screen,
   ]);
 
-  async function syncOnlineMatchState() {
-    if (!room?.isOnline || !room.id || !room.playerId) {
-      return {
-        history: [] as OnlinePlayerRoundSummary[],
-        standings: [] as OnlineMatchStanding[],
-      };
-    }
-
-    const [nextStandings, nextRoundHistory] = await Promise.all([
-      getOnlineMatchStandings(room.id),
-      getOnlinePlayerRoundHistory(room.id, room.playerId),
-    ]);
-
+  function applyOnlineMatchState(
+    nextStandings: OnlineMatchStanding[],
+    nextRoundHistory: OnlinePlayerRoundSummary[],
+  ) {
     setOnlineMatchStandings(nextStandings);
     setOnlinePlayerRoundHistory(nextRoundHistory);
     setRoundHistory(nextRoundHistory.map((round) => ({
@@ -1571,10 +1359,37 @@ export function useLocalGame() {
       roundNumber: round.roundNumber,
       score: round.score,
     })));
+  }
+
+  async function syncOnlineMatchState(commit = true) {
+    if (!room?.isOnline || !room.id || !room.playerId) {
+      return {
+        history: [] as OnlinePlayerRoundSummary[],
+        standings: [] as OnlineMatchStanding[],
+        isCurrent: true,
+      };
+    }
+
+    const context: OnlineMatchContext = {
+      generation: matchGenerationRef.current,
+      roomId: room.id,
+      roundId: currentRound?.id ?? null,
+    };
+
+    const [nextStandings, nextRoundHistory] = await Promise.all([
+      getOnlineMatchStandings(room.id),
+      getOnlinePlayerRoundHistory(room.id, room.playerId),
+    ]);
+
+    const isCurrent = isCurrentOnlineMatchContext(context);
+    if (commit && isCurrent) {
+      applyOnlineMatchState(nextStandings, nextRoundHistory);
+    }
 
     return {
       history: nextRoundHistory,
       standings: nextStandings,
+      isCurrent,
     };
   }
 
@@ -1623,6 +1438,74 @@ export function useLocalGame() {
     } finally {
       setIsRoomBusy(false);
     }
+  }
+
+  function startPractice(modeSetup: GameModeSetup) {
+    if (room) {
+      setRoomError(`Session ${room.code} is still open. Close it before starting Practice.`);
+      return;
+    }
+
+    const name = ensurePlayerName();
+    const settings = getModeSetupRoomSettings(modeSetup);
+    const nextBotNames = pickBotNames(modeSetup.botCount, []);
+    const nextBotPersonalities = pickBotPersonalities(modeSetup.botCount, []);
+    const nextLetter = pickNextLetterFromBag(LETTER_POOL);
+    const nextRound = {
+      id: `local-practice-${Date.now()}-${nextLetter}`,
+      letter: nextLetter,
+      roundNumber: 1,
+    };
+    const nextRoom: LocalRoom = {
+      code: '',
+      hostName: name,
+      isOnline: false,
+      isHost: true,
+      playerCount: 1,
+      playerNames: [name, ...nextBotNames],
+      playerName: name,
+      settings,
+      setupLocked: true,
+      status: 'in_round',
+      spectatorCount: 0,
+      visibility: 'private',
+    };
+
+    matchGenerationRef.current += 1;
+    completedMatchRecordedRef.current = false;
+    invalidateOnlineRevealSnapshotRequests();
+    roundSubmissionRef.current = null;
+    roundSubmissionOwnerRef.current = null;
+    invalidateTimeoutFinalization();
+    applyModeSetup(modeSetup);
+    setRoomError('');
+    setIsRoundBusy(false);
+    setRoom(nextRoom);
+    setCurrentRound(nextRound);
+    setLetterBag(removeLetterFromBag(LETTER_POOL, nextLetter));
+    setRoundLetter(nextLetter);
+    setManualRoundLetter('');
+    setTimeRemaining(modeSetup.roundSeconds);
+    setAnswers(createEmptyAnswers());
+    setVerdicts(createVerdictsFromAnswers(createEmptyAnswers(), nextLetter, modeSetup.scoringStyle));
+    setRoundHistory([]);
+    setRoundSubmitted(false);
+    setBotNames(nextBotNames);
+    setBotPersonalities(nextBotPersonalities);
+    setBotLastScores(Array.from({ length: modeSetup.botCount }, () => 0));
+    setBotTotalScores(Array.from({ length: modeSetup.botCount }, () => 0));
+    setBotRoundAnswers([]);
+    setLocalMatchStandings([]);
+    setOnlineRevealAnswers([]);
+    setOnlineAnswerVoteRefreshWarning(null);
+    setOnlineMatchStandings([]);
+    setOnlinePlayerRoundHistory([]);
+    setOnlineRoundScores([]);
+    setOnlineRoundAgreement(EMPTY_ONLINE_ROUND_AGREEMENT);
+    setMatchStartedAtMs(null);
+    setMatchTimeRemaining(0);
+    setLastMatchResult(null);
+    setScreen('round');
   }
 
   function joinLiveTable() { return joinFlight.current(runLiveJoin); }
@@ -1690,17 +1573,29 @@ export function useLocalGame() {
     }
 
     const name = ensurePlayerName();
+    const joinGeneration = matchGenerationRef.current;
+    const isCurrentJoin = () => matchGenerationRef.current === joinGeneration
+      && onlineMatchContextRef.current === null;
 
     setIsRoomBusy(true);
     setRoomError('');
 
     try {
       const onlineRoom = await joinOnlineRoom(cleanedRoomCode, name);
+      if (!isCurrentJoin()) {
+        return;
+      }
       const activeRound = await getOnlineRoomSnapshot(onlineRoom.id, onlineRoom.playerId)
         .then((snapshot) => snapshot.activeRound);
+      if (!isCurrentJoin()) {
+        return;
+      }
       const restoredAnswers = activeRound
         ? await getOnlinePlayerAnswers(activeRound.id, onlineRoom.playerId)
         : {};
+      if (!isCurrentJoin()) {
+        return;
+      }
 
       setRoom({
         code: onlineRoom.code,
@@ -1748,7 +1643,9 @@ export function useLocalGame() {
         setScreen('lobby');
       }
     } catch (error) {
-      setRoomError(error instanceof Error ? error.message : 'Could not join session.');
+      if (isCurrentJoin()) {
+        setRoomError(error instanceof Error ? error.message : 'Could not join session.');
+      }
     } finally {
       setIsRoomBusy(false);
     }
@@ -1759,7 +1656,12 @@ export function useLocalGame() {
     setIsEditingBrawl(false);
     const roomToLeave = room;
     matchGenerationRef.current += 1;
+    completedMatchRecordedRef.current = false;
+    invalidateOnlineRevealSnapshotRequests();
     roundSubmissionRef.current = null;
+    roundSubmissionOwnerRef.current = null;
+    invalidateTimeoutFinalization();
+    setIsRoundBusy(false);
     Object.values(draftSaveTimersRef.current).forEach((timerId) => clearTimeout(timerId));
     draftSaveTimersRef.current = {};
 
@@ -1790,6 +1692,7 @@ export function useLocalGame() {
     setBotRoundAnswers([]);
     setLocalMatchStandings([]);
     setOnlineRevealAnswers([]);
+    setOnlineAnswerVoteRefreshWarning(null);
     setOnlineMatchStandings([]);
     setOnlinePlayerRoundHistory([]);
     setOnlineRoundScores([]);
@@ -1803,13 +1706,18 @@ export function useLocalGame() {
     setScreen('home');
   }
 
-  async function resetMatch() {
+  async function performResetMatch() {
     editSnapshotRef.current = null;
     setIsEditingBrawl(false);
     const previousRoom = room;
     const shouldCreateFreshOnlineRoom = Boolean(previousRoom?.isOnline);
     const resetGeneration = ++matchGenerationRef.current;
+    completedMatchRecordedRef.current = false;
+    invalidateOnlineRevealSnapshotRequests();
     roundSubmissionRef.current = null;
+    roundSubmissionOwnerRef.current = null;
+    invalidateTimeoutFinalization();
+    setIsRoundBusy(false);
     Object.values(draftSaveTimersRef.current).forEach((timerId) => clearTimeout(timerId));
     draftSaveTimersRef.current = {};
 
@@ -1836,6 +1744,7 @@ export function useLocalGame() {
     setBotRoundAnswers([]);
     setLocalMatchStandings([]);
     setOnlineRevealAnswers([]);
+    setOnlineAnswerVoteRefreshWarning(null);
     setOnlineMatchStandings([]);
     setOnlinePlayerRoundHistory([]);
     setOnlineRoundScores([]);
@@ -1905,6 +1814,28 @@ export function useLocalGame() {
     }
 
     setScreen('lobby');
+  }
+
+  function resetMatch() {
+    if (matchResetInFlightRef.current) {
+      return matchResetInFlightRef.current;
+    }
+
+    const resetPromise = performResetMatch();
+    matchResetInFlightRef.current = resetPromise;
+    void resetPromise.then(
+      () => {
+        if (matchResetInFlightRef.current === resetPromise) {
+          matchResetInFlightRef.current = null;
+        }
+      },
+      () => {
+        if (matchResetInFlightRef.current === resetPromise) {
+          matchResetInFlightRef.current = null;
+        }
+      },
+    );
+    return resetPromise;
   }
 
   function setBotCount(nextBotCount: number, shouldSync = true) {
@@ -2176,7 +2107,15 @@ export function useLocalGame() {
       ? cleanManualLetter
       : pickNextLetterFromBag(letterBag);
     const nextMatchStartedAtMs = matchDurationSeconds && !matchStartedAtMs ? Date.now() : matchStartedAtMs;
+    const context = room?.isOnline && room.id
+      ? {
+        generation: matchGenerationRef.current,
+        roomId: room.id,
+        roundId: currentRound?.id ?? null,
+      }
+      : null;
 
+    invalidateTimeoutFinalization();
     setIsRoundBusy(true);
     setRoomError('');
 
@@ -2193,6 +2132,10 @@ export function useLocalGame() {
           letter: nextLetter,
           roundNumber: roundHistory.length + 1,
         };
+
+      if (context && !isCurrentOnlineMatchContext(context)) {
+        return;
+      }
 
       setCurrentRound(onlineRound);
       setLetterBag((currentLetters) => removeLetterFromBag(currentLetters, onlineRound.letter));
@@ -2213,7 +2156,9 @@ export function useLocalGame() {
       setRoundSubmitted(false);
       setScreen('round');
     } catch (error) {
-      setRoomError(error instanceof Error ? error.message : 'Could not start round.');
+      if (!context || isCurrentOnlineMatchContext(context)) {
+        setRoomError(error instanceof Error ? error.message : 'Could not start round.');
+      }
     } finally {
       setIsRoundBusy(false);
     }
@@ -2265,42 +2210,80 @@ export function useLocalGame() {
       return;
     }
 
-    const timeoutKey = currentRound.id;
+    const timeoutGeneration = matchGenerationRef.current;
+    const timeoutKey = `${timeoutGeneration}:${room.id}:${currentRound.id}`;
     const existingFinalization = timeoutFinalizationRef.current;
 
     if (existingFinalization?.key === timeoutKey) {
       return existingFinalization.promise;
     }
 
+    const timeoutContext: OnlineMatchContext = {
+      generation: matchGenerationRef.current,
+      roomId: room.id,
+      roundId: currentRound.id,
+    };
+    const timeoutPlayerId = room.playerId;
+    const timeoutRoomId = room.id;
+    const timeoutRoundId = currentRound.id;
+    const timeoutOwner = Symbol('timeout-finalization');
+    timeoutFinalizationOwnerRef.current = timeoutOwner;
+
     const finalization = (async () => {
       setIsRoundBusy(true);
       setRoomError('');
+      const mutationEpoch = beginOnlineRevealMutation();
 
       try {
         const result = await finalizeOnlineRoundTimeout({
-          playerId: room.playerId!,
-          roomId: room.id!,
-          roundId: currentRound.id,
+          playerId: timeoutPlayerId,
+          roomId: timeoutRoomId,
+          roundId: timeoutRoundId,
         });
+        if (
+          timeoutFinalizationOwnerRef.current !== timeoutOwner
+          || !isCurrentOnlineMatchContext(timeoutContext)
+        ) {
+          return;
+        }
         emitQaTelemetry('client.timeout-finalized', {
           duplicate: result.duplicate,
           phase: result.phase,
           revision: result.revision,
-          roomId: room.id,
-          roundId: currentRound.id,
+          roomId: timeoutRoomId,
+          roundId: timeoutRoundId,
         });
 
-        const snapshot = await getOnlineRevealSnapshot(room.id!, currentRound.id);
+        const { request, snapshot } = await readOnlineRevealSnapshot(timeoutRoomId, timeoutRoundId, 'authoritative');
+        if (
+          timeoutFinalizationOwnerRef.current !== timeoutOwner
+          ||
+          !isCurrentOnlineMatchContext(timeoutContext)
+          || !snapshot
+          || !isCurrentOnlineRevealSnapshotRequest(request)
+        ) {
+          return;
+        }
         setOnlineRevealAnswers(snapshot.answers);
+        setOnlineAnswerVoteRefreshWarning(null);
         setOnlineRoundScores(snapshot.scores);
         setOnlineRoundAgreement(getOnlineRoundAgreement(snapshot));
         setRoundSubmitted(true);
         setScreen('reveal');
       } catch (error) {
-        setRoomError(error instanceof Error ? error.message : 'Could not finalise timed-out round.');
-        debugGameError('round-timeout-finalize-failed', error, { roundId: currentRound.id });
+        if (
+          timeoutFinalizationOwnerRef.current === timeoutOwner
+          && isCurrentOnlineMatchContext(timeoutContext)
+        ) {
+          setRoomError(error instanceof Error ? error.message : 'Could not finalise timed-out round.');
+        }
+        debugGameError('round-timeout-finalize-failed', error, { roundId: timeoutRoundId });
       } finally {
-        setIsRoundBusy(false);
+        finishOnlineRevealMutation(mutationEpoch);
+        if (timeoutFinalizationOwnerRef.current === timeoutOwner) {
+          timeoutFinalizationOwnerRef.current = null;
+          setIsRoundBusy(false);
+        }
       }
     })();
 
@@ -2309,8 +2292,11 @@ export function useLocalGame() {
     try {
       await finalization;
     } finally {
-      if (timeoutFinalizationRef.current?.key === timeoutKey) {
+      if (timeoutFinalizationRef.current?.promise === finalization) {
         timeoutFinalizationRef.current = null;
+      }
+      if (timeoutFinalizationOwnerRef.current === timeoutOwner) {
+        timeoutFinalizationOwnerRef.current = null;
       }
     }
   }
@@ -2331,6 +2317,24 @@ export function useLocalGame() {
       return;
     }
 
+    const submissionContext = room?.isOnline && room.id && currentRound?.id
+      ? {
+        generation: matchGenerationRef.current,
+        roomId: room.id,
+        roundId: currentRound.id,
+      }
+      : null;
+    const submissionPlayerId = submissionContext && room?.playerId ? room.playerId : null;
+    const submissionOwner = Symbol('round-submission');
+    roundSubmissionOwnerRef.current = submissionOwner;
+    const isCurrentSubmissionContext = () => (
+      !submissionContext
+      || (
+        isCurrentOnlineMatchContext(submissionContext)
+        && roundSubmissionRef.current?.key === submissionKey
+      )
+    );
+
     const submission = (async () => {
       setIsRoundBusy(true);
       setRoomError('');
@@ -2344,18 +2348,21 @@ export function useLocalGame() {
           ? createOpponentVerdictsFromAnswers(answers, roundLetter, scoringStyle, botPersonalities, botDifficulty)
           : createVerdictsFromAnswers(answers, roundLetter, scoringStyle);
 
-        if (room?.isOnline && currentRound?.id && room.id && room.playerId) {
-          const playerId = room.playerId;
+        if (submissionContext && submissionPlayerId) {
           const selectedAnswers = Object.fromEntries(
             selectedCategories.map((category) => [category, answers[category]]),
           ) as Partial<AnswersByCategory>;
 
           await submitOnlineAnswers({
             answers: selectedAnswers,
-            playerId,
-            roomId: room.id,
-            roundId: currentRound.id,
+            playerId: submissionPlayerId,
+            roomId: submissionContext.roomId,
+            roundId: submissionContext.roundId,
           });
+
+          if (!isCurrentSubmissionContext()) {
+            return;
+          }
 
         }
 
@@ -2380,10 +2387,14 @@ export function useLocalGame() {
         setVerdicts(nextVerdicts);
         setScreen('reveal');
       } catch (error) {
-        setRoomError(error instanceof Error ? error.message : 'Could not submit answers.');
+        if (isCurrentSubmissionContext()) {
+          setRoomError(error instanceof Error ? error.message : 'Could not submit answers.');
+        }
         debugGameError('round-submit-failed', error, { roundId: currentRound?.id });
       } finally {
-        setIsRoundBusy(false);
+        if (roundSubmissionOwnerRef.current === submissionOwner) {
+          setIsRoundBusy(false);
+        }
       }
     })();
 
@@ -2394,6 +2405,9 @@ export function useLocalGame() {
     } finally {
       if (roundSubmissionRef.current?.promise === submission) {
         roundSubmissionRef.current = null;
+      }
+      if (roundSubmissionOwnerRef.current === submissionOwner) {
+        roundSubmissionOwnerRef.current = null;
       }
     }
   }
@@ -2427,48 +2441,87 @@ export function useLocalGame() {
     if (room?.isOnline) return;
   }
 
-  function persistCategoryVote(category: StarterCategory, vote: OnlineVoteVerdict, finalVerdict: OnlineVoteVerdict) {
-    if (!room?.isOnline || !currentRound?.id || !room.playerId) {
-      return;
-    }
-    if (isOnlinePhaseExpired('scoring')) {
-      setRoomError('Scoring deadline expired. Syncing the server result.');
-      void finalizeTimedOutRound();
-      return;
-    }
-
-    persistOnlineAnswerVote({
-      answerOwnerPlayerId: room.playerId,
-      category,
-      finalVerdict,
-      roundId: currentRound.id,
-      vote,
-      voterPlayerId: room.playerId,
-    }).catch((error) => {
-      setRoomError(error instanceof Error ? error.message : 'Could not save vote.');
-    });
+  function rejectVote(message: string): VoteOutcome {
+    const error = new VoteCommandError(message, 'eligibility', 'rejected');
+    setRoomError(describeVoteFailure(error));
+    return { accepted: false, error };
   }
 
-  function persistSyncedAnswerVote(answer: OnlineRevealAnswer, vote: OnlineVoteVerdict, finalVerdict: OnlineVoteVerdict) {
+  async function persistCategoryVote(_category: StarterCategory, _vote: OnlineVoteVerdict, _finalVerdict: OnlineVoteVerdict): Promise<VoteOutcome> {
+    // A player's own ordinary answer is never an eligible score-vote target.
+    // Existing server disputes use persistSyncedDisputeVote instead.
+    return rejectVote('You cannot score your own online answer. Open a server challenge and vote on that dispute.');
+  }
+
+  async function persistSyncedAnswerVote(answer: OnlineRevealAnswer, vote: OnlineVoteVerdict, finalVerdict: OnlineVoteVerdict): Promise<VoteOutcome> {
     if (!room?.isOnline || !currentRound?.id || !room.playerId) {
-      return;
+      return rejectVote('No active online round for this vote.');
     }
     if (isOnlinePhaseExpired('scoring')) {
-      setRoomError('Scoring deadline expired. Syncing the server result.');
       void finalizeTimedOutRound();
-      return;
+      return rejectVote('Scoring deadline expired.');
     }
+    setRoomError('');
+    const mutationEpoch = beginOnlineRevealMutation();
+    const roomId = room.id!;
+    const roundId = currentRound.id!;
+    const voterPlayerId = room.playerId!;
+    const context: OnlineMatchContext = {
+      generation: matchGenerationRef.current,
+      roomId,
+      roundId,
+    };
+    try {
+      let receipt = await persistOnlineAnswerVoteById({
+        answerId: answer.id, answerOwnerPlayerId: answer.playerId, finalVerdict,
+        roundId, vote, voterPlayerId,
+      });
 
-    persistOnlineAnswerVoteById({
-      answerId: answer.id,
-      answerOwnerPlayerId: answer.playerId,
-      finalVerdict,
-      roundId: currentRound.id,
-      vote,
-      voterPlayerId: room.playerId,
-    }).catch((error) => {
-      setRoomError(error instanceof Error ? error.message : 'Could not save vote.');
-    });
+      if (!receipt.accepted || !isCurrentOnlineMatchContext(context)) {
+        return receipt;
+      }
+
+      try {
+        const { request, snapshot } = await readOnlineRevealSnapshot(roomId, roundId, 'authoritative');
+        if (!snapshot || !isCurrentOnlineRevealSnapshotRequest(request)) {
+          return receipt;
+        }
+
+        let syncedMatchState: Awaited<ReturnType<typeof syncOnlineMatchState>> | null = null;
+        try {
+          syncedMatchState = await syncOnlineMatchState(false);
+        } catch (cause) {
+          const refreshWarning = voteFailure(cause, 'refresh');
+          setOnlineAnswerVoteRefreshWarning(refreshWarning.message);
+          receipt = { ...receipt, refreshWarning };
+        }
+        if (!isCurrentOnlineMatchContext(context) || !isCurrentOnlineRevealSnapshotRequest(request)) {
+          return receipt;
+        }
+
+        if (syncedMatchState?.isCurrent) {
+          setOnlineAnswerVoteRefreshWarning(null);
+        }
+        setOnlineRevealAnswers(snapshot.answers);
+        setOnlineRoundScores(snapshot.scores);
+        setOnlineRoundAgreement(getOnlineRoundAgreement(snapshot));
+        if (syncedMatchState?.isCurrent) {
+          applyOnlineMatchState(syncedMatchState.standings, syncedMatchState.history);
+          lastOnlineMatchSyncAtRef.current = Date.now();
+        }
+      } catch (cause) {
+        const refreshWarning = voteFailure(cause, 'refresh');
+        setOnlineAnswerVoteRefreshWarning(refreshWarning.message);
+        receipt = { ...receipt, refreshWarning };
+      }
+      return receipt;
+    } catch (cause) {
+      const error = voteFailure(cause, 'cast-vote', true);
+      setRoomError(describeVoteFailure(error));
+      return { accepted: false, error };
+    } finally {
+      finishOnlineRevealMutation(mutationEpoch);
+    }
   }
 
   async function openSyncedAnswerDispute(answer: OnlineRevealAnswer) {
@@ -2481,6 +2534,12 @@ export function useLocalGame() {
       return;
     }
 
+    const context: OnlineMatchContext = {
+      generation: matchGenerationRef.current,
+      roomId: room.id,
+      roundId: currentRound.id,
+    };
+    const mutationEpoch = beginOnlineRevealMutation();
     try {
       await openOnlineAnswerDispute({
         answerId: answer.id,
@@ -2489,43 +2548,88 @@ export function useLocalGame() {
         roundId: currentRound.id,
       });
 
-      const snapshot = await getOnlineRevealSnapshot(room.id, currentRound.id);
+      const { request, snapshot } = await readOnlineRevealSnapshot(room.id, currentRound.id, 'authoritative');
+      if (!snapshot || !isCurrentOnlineRevealSnapshotRequest(request)) {
+        return;
+      }
       setOnlineRevealAnswers(snapshot.answers);
+      setOnlineAnswerVoteRefreshWarning(null);
       setOnlineRoundScores(snapshot.scores);
       setOnlineRoundAgreement(getOnlineRoundAgreement(snapshot));
     } catch (error) {
-      setRoomError(error instanceof Error ? error.message : 'Could not open dispute.');
+      if (isCurrentOnlineMatchContext(context)) {
+        setRoomError(error instanceof Error ? error.message : 'Could not open dispute.');
+      }
+    } finally {
+      finishOnlineRevealMutation(mutationEpoch);
     }
   }
 
-  async function persistSyncedDisputeVote(disputeId: string, vote: OnlineVoteVerdict) {
-    if (!room?.isOnline || !room.id || !currentRound?.id || !room.playerId) {
-      return;
+  async function persistSyncedDisputeVote(disputeId: string, vote: OnlineVoteVerdict): Promise<VoteOutcome> {
+    if (!room?.isOnline || !room.id || !currentRound?.id || !room.playerId || !disputeId) {
+      return rejectVote('No active online dispute for this vote.');
     }
     if (isOnlinePhaseExpired('dispute')) {
-      setRoomError('Dispute deadline expired. Syncing the server result.');
       void finalizeTimedOutRound();
-      return;
+      return rejectVote('Dispute deadline expired.');
     }
-
+    const context: OnlineMatchContext = {
+      generation: matchGenerationRef.current,
+      roomId: room.id,
+      roundId: currentRound.id,
+    };
+    setRoomError('');
     try {
-      await persistOnlineDisputeVote({
-        disputeId,
-        roundId: currentRound.id,
-        roomId: room.id,
-        verdict: vote,
-        voterPlayerId: room.playerId,
-      });
+      const receipt = await disputeVoteFlight.current(`${room.id}:${currentRound.id}:${disputeId}:${room.playerId}`, vote, async () => {
+        const mutationEpoch = beginOnlineRevealMutation();
+        try {
+          let accepted = await persistOnlineDisputeVote({
+            disputeId, roundId: currentRound.id, roomId: room.id!, verdict: vote, voterPlayerId: room.playerId!,
+          });
+          // A subsequent read failure must not turn an accepted vote into a failed vote.
+          try {
+            const { request, snapshot } = await readOnlineRevealSnapshot(room.id!, currentRound.id, 'authoritative');
+            if (!snapshot || !isCurrentOnlineRevealSnapshotRequest(request)) {
+              return accepted;
+            }
 
-      // Pull the authoritative answer, dispute, and round-score state now;
-      // do not make the player wait for the next polling tick.
-      const snapshot = await getOnlineRevealSnapshot(room.id, currentRound.id);
-      setOnlineRevealAnswers(snapshot.answers);
-      setOnlineRoundScores(snapshot.scores);
-      setOnlineRoundAgreement(getOnlineRoundAgreement(snapshot));
-      await syncOnlineMatchState();
-    } catch (error) {
-      setRoomError(error instanceof Error ? error.message : 'Could not save dispute vote.');
+            let syncedMatchState: Awaited<ReturnType<typeof syncOnlineMatchState>> | null = null;
+            try {
+              syncedMatchState = await syncOnlineMatchState(false);
+            } catch (cause) {
+              accepted = { ...accepted, refreshWarning: voteFailure(cause, 'refresh') };
+            }
+            if (!isCurrentOnlineRevealSnapshotRequest(request)) {
+              return accepted;
+            }
+
+            setOnlineRevealAnswers(snapshot.answers);
+            setOnlineAnswerVoteRefreshWarning(null);
+            setOnlineRoundScores(snapshot.scores);
+            setOnlineRoundAgreement(getOnlineRoundAgreement(snapshot));
+            if (syncedMatchState) {
+              applyOnlineMatchState(syncedMatchState.standings, syncedMatchState.history);
+              lastOnlineMatchSyncAtRef.current = Date.now();
+            }
+          } catch (cause) {
+            accepted = { ...accepted, refreshWarning: voteFailure(cause, 'refresh') };
+          }
+          return accepted;
+        } finally {
+          finishOnlineRevealMutation(mutationEpoch);
+        }
+      });
+      const warnings = [receipt.warning, receipt.refreshWarning].filter((warning) => warning !== undefined);
+      if (warnings.length && isCurrentOnlineMatchContext(context)) {
+        setRoomError(`Vote accepted. ${warnings.map((warning) => `${warning.stage === 'refresh' ? 'Results refresh failed' : 'Challenge resolution failed'}: ${warning.message}`).join(' ')} Do not resubmit the vote.`);
+      }
+      return receipt;
+    } catch (cause) {
+      const error = voteFailure(cause, 'cast-dispute-vote', true);
+      if (isCurrentOnlineMatchContext(context)) {
+        setRoomError(describeVoteFailure(error));
+      }
+      return { accepted: false, error };
     }
   }
 
@@ -2580,13 +2684,26 @@ export function useLocalGame() {
     let syncedOnlineStandings: OnlineMatchStanding[] = [];
     let syncedOnlinePlayerStanding: OnlineMatchStanding | undefined;
 
+    invalidateTimeoutFinalization();
+
     if (room?.isOnline && currentRound?.id && room.id && room.playerId) {
+      const context: OnlineMatchContext = {
+        generation: matchGenerationRef.current,
+        roomId: room.id,
+        roundId: currentRound.id,
+      };
       setIsRoundBusy(true);
       setRoomError('');
 
       try {
-        if (room.visibility === 'public' && !botRoundAnswers.length) {
+        // Public CPU totals already include this round. Always use the server
+        // snapshot at completion, even when reveal polling cached its answers.
+        if (room.visibility === 'public') {
           serverBotSnapshot = await getOnlineBotRoundSnapshot(room.id, currentRound.id);
+          if (!isCurrentOnlineMatchContext(context)) {
+            setIsRoundBusy(false);
+            return;
+          }
           applyOnlineBotSnapshot(serverBotSnapshot);
         }
         await completeOnlineRound({
@@ -2595,13 +2712,23 @@ export function useLocalGame() {
           roomId: room.id,
           roundId: currentRound.id,
         });
+        if (!isCurrentOnlineMatchContext(context)) {
+          setIsRoundBusy(false);
+          return;
+        }
         const syncedMatchState = await syncOnlineMatchState();
+        if (!syncedMatchState.isCurrent || !isCurrentOnlineMatchContext(context)) {
+          setIsRoundBusy(false);
+          return;
+        }
         syncedOnlineStandings = syncedMatchState.standings;
         syncedOnlinePlayerStanding = syncedMatchState.standings.find((standing) => (
           standing.playerId === room.playerId
         ));
       } catch (error) {
-        setRoomError(error instanceof Error ? error.message : 'Could not finish round.');
+        if (isCurrentOnlineMatchContext(context)) {
+          setRoomError(error instanceof Error ? error.message : 'Could not finish round.');
+        }
         setIsRoundBusy(false);
         return;
       }
@@ -2635,6 +2762,10 @@ export function useLocalGame() {
     const playerMatchScore = syncedOnlinePlayerStanding?.totalScore ?? nextPlayerScore;
     const playerRoundScore = syncedOnlinePlayerStanding?.lastRoundScore ?? totalScore;
     const nextStreak = playerRoundScore > 0 ? playerProfile.currentStreak + 1 : 0;
+    const shouldRecordCompletedMatch = willCompleteMatch && !completedMatchRecordedRef.current;
+    if (shouldRecordCompletedMatch) {
+      completedMatchRecordedRef.current = true;
+    }
     const nextBotStandingEntries = Array.from({ length: botCount }, (_, index) => ({
       id: `bot-${index + 1}`,
       score: nextBotTotalScores[index] ?? 0,
@@ -2664,26 +2795,30 @@ export function useLocalGame() {
       totalPlayers: nextStandings.length,
       outcome: playerRank === 1 ? 'win' : 'loss',
     };
-    const nextPlayerProfile = {
-      allTimePoints: playerProfile.allTimePoints + playerRoundScore,
-      avatarKey: playerProfile.avatarKey,
-      bestStreak: Math.max(playerProfile.bestStreak, nextStreak),
-      currentStreak: nextStreak,
-      gamesPlayed: playerProfile.gamesPlayed + 1,
-      recentMatches: willCompleteMatch
-        ? [nextMatchRecord, ...playerProfile.recentMatches].slice(0, 5)
-        : playerProfile.recentMatches,
-    };
+    const nextPlayerProfile = willCompleteMatch && !shouldRecordCompletedMatch
+      ? playerProfile
+      : {
+        allTimePoints: playerProfile.allTimePoints + playerRoundScore,
+        avatarKey: playerProfile.avatarKey,
+        bestStreak: Math.max(playerProfile.bestStreak, nextStreak),
+        currentStreak: nextStreak,
+        gamesPlayed: playerProfile.gamesPlayed + (shouldRecordCompletedMatch ? 1 : 0),
+        recentMatches: willCompleteMatch
+          ? [nextMatchRecord, ...playerProfile.recentMatches].slice(0, 5)
+          : playerProfile.recentMatches,
+      };
 
     setLocalMatchStandings(nextStandings);
-    setLastMatchResult({
-      achievementUnlockedLabels: getNewAchievementLabels(playerProfile, nextPlayerProfile),
-      isWinner: playerRank === 1,
-      playerRank,
-      playerScore: playerMatchScore,
-      pointsEarned: playerRoundScore,
-      totalPlayers: nextStandings.length,
-    });
+    if (!willCompleteMatch || shouldRecordCompletedMatch) {
+      setLastMatchResult({
+        achievementUnlockedLabels: getNewAchievementLabels(playerProfile, nextPlayerProfile),
+        isWinner: playerRank === 1,
+        playerRank,
+        playerScore: playerMatchScore,
+        pointsEarned: playerRoundScore,
+        totalPlayers: nextStandings.length,
+      });
+    }
     setBotTotalScores(nextBotTotalScores);
     if (!room?.isOnline) {
       setRoundHistory((currentHistory) => [
@@ -2730,11 +2865,13 @@ export function useLocalGame() {
     lifetimeScore,
     liveTableCountdownRemaining,
     onlineRevealAnswers,
+    onlineAnswerVoteRefreshWarning,
     onlineMatchStandings,
     onlinePlayerRoundHistory,
     onlineRoundAgreement,
     onlineRoundScores,
     finishNameSetup,
+    getOnlineLifecycleContext,
     isRoomBusy,
     isRoundBusy,
     localMatchStandings,
@@ -2747,6 +2884,7 @@ export function useLocalGame() {
     matchTimeRemaining,
     room,
     roomError,
+    setRoomError,
     roomExpiredNotice,
     roomRejoinedNotice,
     roomCodeInput,
@@ -2774,6 +2912,7 @@ export function useLocalGame() {
     setSkipRulesOnLaunch,
     dismissExpiredRoom,
     dismissRejoinedRoomNotice: () => setRoomRejoinedNotice(false),
+    startPractice,
     startRound,
     submitAnswers,
     submitBetaReport,

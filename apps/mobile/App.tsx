@@ -1,4 +1,6 @@
-import { getAnswerOutcome, scoreAnswer, type AnswerVerdict } from '@animal-name-place/game-core';
+import { createScoringNavigation, getHumanScoringWork, getScoringReadiness, scoringPhasePresentation } from './src/scoringReadiness';
+import { describeVoteFailure, withVoteAcknowledgement } from './src/voteCommands';
+import { getAnswerOutcome, normalizeAnswer, scoreAnswer, type AnswerVerdict } from '@animal-name-place/game-core';
 import {
   APP_NAME,
   DEFAULT_ROUND_SECONDS,
@@ -63,10 +65,21 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
+import {
+  buildReviewCategoryDeck,
+  buildScoreComparisonEntries,
+  resolveReviewSelection,
+  reviewResolution,
+  reviewDetailsVisible,
+  type ReviewSelection,
+} from './src/reviewPresentation';
+import { countAnsweredBotAnswers } from './src/statisticsPresentation';
 import { useGameAudio } from './src/useGameAudio';
 import { debugGameError, installWebDiagnostics } from './src/devDiagnostics';
 import { getKnownCategoriesForAnswer, type BotPersonality, type GameModeSetup, useLocalGame } from './src/useLocalGame';
-import { markOnlineRoomPlayerActive, markOnlineRoomPlayerDisconnected } from './src/onlineRooms';
+import { findMatchingBotAnswer } from './src/localBotRound';
+import { markOnlineRoomPlayerDisconnected, recoverOnlineRoomPlayer } from './src/onlineRooms';
+import { createForegroundRecoveryCoordinator } from './src/foregroundRecovery';
 import { getCountdownState, getPhaseDeadline, getTimeoutPhase } from './src/timeoutRules';
 import {
   AnswerDetails,
@@ -537,7 +550,7 @@ export default function App() {
   const [showNextLetterModal, setShowNextLetterModal] = useState(false);
   const [scoringStep, setScoringStep] = useState<ScoringStep>('score');
   const [scoringCardIndex, setScoringCardIndex] = useState(0);
-  const [activeReviewAnswer, setActiveReviewAnswer] = useState<ReviewAnswer | null>(null);
+  const [reviewSelection, setReviewSelection] = useState<ReviewSelection | null>(null);
   const [collapsedReviewCategories, setCollapsedReviewCategories] = useState<string[]>([]);
   const [leftRoomNoticeNames, setLeftRoomNoticeNames] = useState<string[]>([]);
   const [roomActivityNotice, setRoomActivityNotice] = useState('');
@@ -573,6 +586,7 @@ export default function App() {
     dismissRejoinedRoomNotice,
     finishNameSetup,
     finishRound,
+    getOnlineLifecycleContext,
     isRoomBusy,
     isRoundBusy,
     isMatchComplete,
@@ -588,6 +602,7 @@ export default function App() {
     matchTimeRemaining,
     manualRoundLetter,
     onlineRevealAnswers,
+    onlineAnswerVoteRefreshWarning,
     onlineMatchStandings,
     onlinePlayerRoundHistory,
     onlineRoundAgreement,
@@ -597,6 +612,7 @@ export default function App() {
     room,
     roomCodeInput,
     roomError,
+    setRoomError,
     roomExpiredNotice,
     roomRejoinedNotice,
     roundHistory,
@@ -626,6 +642,7 @@ export default function App() {
     setSkipRulesOnLaunch,
     scoringOwner,
     scoringStyle,
+    startPractice,
     startRound,
     submitAnswers,
     submitBetaReport,
@@ -638,6 +655,20 @@ export default function App() {
     updateVerdict,
     verdicts,
   } = useLocalGame();
+  useEffect(() => {
+    const warningPrefix = 'Your vote was accepted. Results may be temporarily outdated.';
+    if (onlineAnswerVoteRefreshWarning) {
+      setChallengeResultNotice({
+        title: 'Vote accepted',
+        message: `${warningPrefix} Refresh failed: ${onlineAnswerVoteRefreshWarning} Do not resubmit the vote.`,
+      });
+      return;
+    }
+
+    setChallengeResultNotice((currentNotice) => (
+      currentNotice?.message.startsWith(warningPrefix) ? null : currentNotice
+    ));
+  }, [onlineAnswerVoteRefreshWarning]);
   const leaveCooldownSeconds = Math.max(0, Math.ceil((leaveCooldownUntilMs - leaveCooldownNowMs) / 1000));
   const gameAudio = useGameAudio({ activeModeLabel, musicOn, soundFxOn, soundPack });
   const isTimerUrgent = screen === 'round' && !roundSubmitted && timeRemaining > 0 && timeRemaining <= 12;
@@ -713,7 +744,7 @@ export default function App() {
     setShowNextLetterModal(false);
     setScoringStep('score');
     setScoringCardIndex(0);
-    setActiveReviewAnswer(null);
+    setReviewSelection(null);
     setCollapsedReviewCategories([]);
     setHighlightedDisputeId('');
     setLeftRoomNoticeNames([]);
@@ -779,23 +810,43 @@ export default function App() {
   }, [roomActivityNotice]);
 
   useEffect(() => {
-    if (!room?.isOnline || !room.playerId) {
+    if (!room?.isOnline || !room.id || !room.playerId) {
       return;
     }
 
     const playerId = room.playerId;
     const displayName = room.playerName;
+    const roomId = room.id;
+    let isMounted = true;
+    const initialContext = getOnlineLifecycleContext();
+    const isCurrent = () => {
+      const currentContext = getOnlineLifecycleContext();
+      return isMounted
+        && currentContext.generation === initialContext.generation
+        && currentContext.roomId === roomId;
+    };
+    const recovery = createForegroundRecoveryCoordinator({
+      isCurrent,
+      onError: (error) => setRoomError(error instanceof Error ? error.message : 'Could not recover the session connection.'),
+    });
 
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') {
-        markOnlineRoomPlayerActive(playerId, displayName).catch(() => undefined);
+        recovery.schedule('active', async () => {
+          const result = await recoverOnlineRoomPlayer({ roomId, playerId, displayName: displayName ?? '' });
+          if (result.status === 'unavailable') return;
+        });
       } else if (nextState === 'background' || nextState === 'inactive') {
-        markOnlineRoomPlayerDisconnected(playerId).catch(() => undefined);
+        recovery.schedule('disconnected', () => markOnlineRoomPlayerDisconnected(playerId));
       }
     });
 
-    return () => subscription.remove();
-  }, [room?.isOnline, room?.playerId, room?.playerName]);
+    return () => {
+      isMounted = false;
+      recovery.invalidate();
+      subscription.remove();
+    };
+  }, [room?.id, room?.isOnline, room?.playerId, room?.playerName]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1069,10 +1120,6 @@ export default function App() {
     return votes[Math.floor(Math.random() * votes.length)];
   }
 
-  function normalizeAnswerForCompare(answer: string) {
-    return answer.trim().toUpperCase().replace(/\s+/g, ' ');
-  }
-
   function getFactCheckCategoryNote(category: StarterCategory, answer: string) {
     if (isCachedWordAccepted(cachedWordBank, category, answer)) {
       return `This exact answer is already accepted for ${category} in the game word bank.`;
@@ -1197,11 +1244,7 @@ export default function App() {
       return null;
     }
 
-    const normalizedAnswer = normalizeAnswerForCompare(answer);
-    const duplicateCpu = botRoundAnswers.find((botAnswer) => (
-      botAnswer.category === category
-      && normalizeAnswerForCompare(botAnswer.answer) === normalizedAnswer
-    ));
+    const duplicateCpu = findMatchingBotAnswer(answer, category, botRoundAnswers);
 
     if (duplicateCpu) {
       return {
@@ -1395,7 +1438,17 @@ export default function App() {
     }
   }
 
-  function castCategoryVote(category: StarterCategory, vote: DisputeVote) {
+  async function castCategoryVote(category: StarterCategory, vote: DisputeVote) {
+    if (room?.isOnline) {
+      const ownAnswer = onlineRevealAnswers.find((answer) => answer.playerId === room.playerId && answer.category === category);
+      if (ownAnswer?.dispute?.status === 'open') {
+        await submitDisputeVote(ownAnswer.dispute.id, vote);
+      } else {
+        const result = await persistCategoryVote(category, vote, vote);
+        if (!result.accepted) setChallengeResultNotice({ title: 'Vote not accepted', message: describeVoteFailure(result.error) });
+      }
+      return;
+    }
     const botVotes = categoryBotVoteLists[category] ?? createBotVoteList(botCategoryVotes[category]);
     const finalVote = resolveTableVote(vote, botVotes);
 
@@ -1413,7 +1466,6 @@ export default function App() {
     }));
     updateVerdict(category, finalVote);
     rememberScoredWord(category, finalVote);
-    persistCategoryVote(category, vote, finalVote);
     triggerHaptic('success');
     setChallengeResultNotice({
       title: 'Challenge result',
@@ -1447,7 +1499,7 @@ export default function App() {
     return winners.length === 1 ? winners[0] : vote;
   }
 
-  function castSyncedAnswerVote(
+  async function castSyncedAnswerVote(
     onlineAnswer: (typeof onlineRevealAnswers)[number],
     vote: DisputeVote,
   ) {
@@ -1456,7 +1508,25 @@ export default function App() {
     }
 
     const finalVote = resolveOnlineAnswerVote(onlineAnswer.votes, room.playerId, vote);
-    persistSyncedAnswerVote(onlineAnswer, vote, finalVote);
+    const result = await persistSyncedAnswerVote(onlineAnswer, vote, finalVote);
+    if (!result.accepted) setChallengeResultNotice({ title: 'Vote not confirmed', message: describeVoteFailure(result.error) });
+    return result;
+  }
+
+  async function submitDisputeVote(disputeId: string, vote: DisputeVote) {
+    const outcome = await withVoteAcknowledgement(() => persistSyncedDisputeVote(disputeId, vote), (result) => {
+      const warnings = [result.warning, result.refreshWarning].filter((warning) => warning !== undefined);
+      setChallengeResultNotice({
+        title: 'Vote accepted',
+        message: warnings.length
+          ? `Your vote was accepted. ${warnings.map((warning) => `${warning.stage === 'refresh' ? 'Results refresh failed' : 'Challenge resolution failed'}: ${warning.message}`).join(' ')} Do not resubmit the vote.`
+          : result.resolved
+            ? `The server resolved the challenge as ${formatDisputeVote(result.finalVerdict as DisputeVote | undefined)}.`
+            : 'Your vote was accepted. The challenge is awaiting a final server result.',
+      });
+    });
+    if (!outcome.accepted) setChallengeResultNotice({ title: 'Vote not confirmed', message: describeVoteFailure(outcome.error) });
+    return outcome;
   }
 
   function castBotAnswerVote(botId: string, category: StarterCategory, vote: DisputeVote) {
@@ -1659,7 +1729,10 @@ export default function App() {
     ? 'bots'
     : 'players';
   const liveBrawlSystemScoresBots = room?.visibility === 'public';
-  const activeScoringTarget = scoringOwner === 'Self'
+  const humanScoringWork = getHumanScoringWork(onlineRevealAnswers, room?.playerId);
+  const activeScoringTarget = room?.isOnline
+    ? humanScoringWork.required.length ? 'players' : 'none'
+    : scoringOwner === 'Self'
     ? 'self'
     : hasHumanScoringTargets && hasBotScoringTargets
       ? mixedScoringTarget
@@ -1671,9 +1744,11 @@ export default function App() {
   const activeScoringTargetName = activeScoringTarget === 'bots'
     ? assignedBotScoringTargetName
     : activeScoringTarget === 'players'
-      ? assignedHumanScoringTargetName
+      ? room?.isOnline ? 'all opponents' : assignedHumanScoringTargetName
       : undefined;
-  const scoringTaskTotal = scoringStep === 'score'
+  const scoringTaskTotal = room?.isOnline && scoringStep === 'score'
+    ? humanScoringWork.required.length
+    : scoringStep === 'score'
     ? activeScoringTarget === 'self'
       ? selectedCategories.length
       : activeScoringTarget === 'players'
@@ -1683,10 +1758,12 @@ export default function App() {
         : activeScoringTarget === 'bots'
           ? botRoundAnswers.filter((botAnswer) => (
             botAnswer.botId === assignedBotScoringTargetId
-          )).length
+          )).filter((botAnswer) => botAnswer.answer.trim()).length
           : 0
     : selectedCategories.length;
-  const scoringTaskDone = scoringStep === 'score'
+  const scoringTaskDone = room?.isOnline && scoringStep === 'score'
+    ? humanScoringWork.completed
+    : scoringStep === 'score'
     ? activeScoringTarget === 'self'
       ? selectedCategories.filter((category) => verdicts[category] !== 'blank').length
       : activeScoringTarget === 'players'
@@ -1710,18 +1787,9 @@ export default function App() {
   const hasPendingLocalBotScores = !room?.isOnline && activeScoringTarget === 'bots' && botRoundAnswers.some((botAnswer) => (
     botAnswer.botId === assignedBotScoringTargetId && botAnswer.verdict === 'blank'
   ));
-  const hasPendingOnlinePlayerScores = Boolean(room?.isOnline && onlineRevealAnswers.some((onlineAnswer) => (
-    activeScoringTarget === 'players'
-    && onlineAnswer.playerId === assignedHumanScoringTargetId
-    && !onlineAnswer.votes.some((vote) => vote.voterPlayerId === room.playerId)
-  )));
-  const hasPendingOnlineBotScores = Boolean(room?.isOnline && activeScoringTarget === 'bots' && botRoundAnswers.some((botAnswer) => (
-    botAnswer.botId === assignedBotScoringTargetId
-    && (liveBrawlSystemScoresBots
-      ? !botAnswerPlayerVotes[getBotAnswerKey(botAnswer.botId, botAnswer.category)]
-      : botAnswer.verdict === 'blank')
-  )));
-  const hasPendingScores = hasPendingSelfScores || hasPendingLocalBotScores || hasPendingOnlinePlayerScores || hasPendingOnlineBotScores;
+  const hasPendingScores = room?.isOnline
+    ? humanScoringWork.pending.length > 0
+    : hasPendingSelfScores || hasPendingLocalBotScores;
   const scoringDeck = scoringStep === 'score'
     ? activeScoringTarget === 'self'
       ? selectedCategories
@@ -1738,10 +1806,7 @@ export default function App() {
           type: 'self' as const,
         }))
       : activeScoringTarget === 'players'
-        ? onlineRevealAnswers
-          .filter((onlineAnswer) => (
-            onlineAnswer.playerId === assignedHumanScoringTargetId
-          ))
+        ? humanScoringWork.required
           .map((onlineAnswer) => {
             const currentVote = onlineAnswer.votes.find((vote) => vote.voterPlayerId === room?.playerId)?.verdict as DisputeVote | undefined;
 
@@ -1786,150 +1851,49 @@ export default function App() {
     : [];
   const activeScoreCard = scoringDeck[Math.min(scoringCardIndex, Math.max(0, scoringDeck.length - 1))] ?? null;
   const getVisibleSelfVerdict = (category: StarterCategory, ownOnlineAnswer?: (typeof onlineRevealAnswers)[number]) => {
-    if (
-      room?.visibility === 'public'
-      && botCount > 0
-      && ownOnlineAnswer
-      && ownOnlineAnswer.verdict === 'blank'
-      && verdicts[category] !== 'blank'
-    ) {
-      return verdicts[category];
-    }
-
     return room?.isOnline && ownOnlineAnswer
       ? ownOnlineAnswer.verdict
       : verdicts[category];
   };
+  const reviewContext = JSON.stringify([matchResetToken, room?.id, room?.playerId,
+    currentRound?.id ?? null, currentRound?.id ? null : roundHistory.length, roundLetter]);
+  useEffect(() => { setReviewSelection(null); }, [reviewContext, screen, scoringStep]);
+  useEffect(() => { if (challengeResultNotice) setReviewSelection(null); }, [challengeResultNotice]);
   const reviewCategoryDeck = scoringStep === 'review'
-    ? selectedCategories.map((category, categoryIndex) => {
-      const ownOnlineAnswer = onlineRevealAnswers.find((onlineAnswer) => (
-        onlineAnswer.category === category && onlineAnswer.playerId === room?.playerId
-      ));
-      const selfAnswer = room?.isOnline
-        ? ownOnlineAnswer?.answer.trim() ?? answers[category].trim()
-        : answers[category].trim();
-      const selfVerdict = getVisibleSelfVerdict(category, ownOnlineAnswer);
-      const entries = [
-        {
-          answer: selfAnswer || 'No answer',
-          id: `review-self-${category}`,
-          isDisputed: disputedCategories.includes(category) || Boolean(ownOnlineAnswer?.dispute),
-          isNoAnswer: !selfAnswer,
-          label: 'You',
-          points: scoreAnswer({ verdict: selfVerdict }),
-          verdict: selfVerdict,
-        },
-        ...onlineRevealAnswers
-          .filter((onlineAnswer) => (
-            onlineAnswer.category === category
-            && onlineAnswer.playerId !== room?.playerId
-          ))
-          .sort((a, b) => (
-            Number(b.playerId === assignedHumanScoringTargetId) - Number(a.playerId === assignedHumanScoringTargetId)
-          ))
-          .map((onlineAnswer) => ({
-            answer: onlineAnswer.answer.trim() || 'No answer',
-            id: onlineAnswer.id,
-            isDisputed: onlineAnswer.dispute?.status === 'open' || onlineAnswer.dispute?.status === 'resolved',
-            isNoAnswer: !onlineAnswer.answer.trim(),
-            label: onlineAnswer.playerName,
-            points: onlineAnswer.points,
-            verdict: onlineAnswer.verdict,
-          })),
-        ...botRoundAnswers
-          .filter((botAnswer) => botAnswer.category === category)
-          .sort((a, b) => (
-            Number(b.botId === assignedBotScoringTargetId) - Number(a.botId === assignedBotScoringTargetId)
-          ))
-          .map((botAnswer) => ({
-            answer: botAnswer.answer.trim() || 'No answer',
-            id: `review-${botAnswer.botId}-${category}`,
-            isDisputed: disputedBotAnswers.includes(getBotAnswerKey(botAnswer.botId, category)),
-            isNoAnswer: !botAnswer.answer.trim(),
-            label: botAnswer.botName,
-            points: botAnswer.points,
-            verdict: botAnswer.verdict,
-          })),
-      ];
-      const answerCounts = entries.reduce<Record<string, number>>((counts, entry) => {
-        if (entry.isNoAnswer) {
-          return counts;
-        }
-
-        const key = entry.answer.trim().toLowerCase();
-
-        counts[key] = (counts[key] ?? 0) + 1;
-        return counts;
-      }, {});
-      const markedEntries = entries.map((entry) => ({
-        ...entry,
-        isDuplicate: !entry.isNoAnswer && answerCounts[entry.answer.trim().toLowerCase()] > 1,
-      }));
-
-      return {
-        category,
-        color: laneColor(categoryIndex),
-        duplicateCount: Object.values(answerCounts).filter((count) => count > 1).length,
-        entries: markedEntries,
-      };
-    }).filter((deckCard) => deckCard.entries.length)
+    ? buildReviewCategoryDeck({
+      answers,
+      assignedBotScoringTargetId,
+      assignedHumanScoringTargetId,
+      botRoundAnswers,
+      disputedBotAnswers,
+      disputedCategories,
+      isOnline: Boolean(room?.isOnline),
+      laneColor,
+      onlineRevealAnswers,
+      playerId: room?.playerId,
+      scoreAnswer,
+      selectedCategories,
+      verdicts,
+    })
     : [];
-  const getScoreComparisonEntries = (scoreCard: typeof activeScoreCard) => {
-    if (!scoreCard) {
-      return [];
-    }
-
-    const activeAnswerKey = normalizeAnswerForCompare(scoreCard.answer);
-    const ownOnlineAnswer = onlineRevealAnswers.find((onlineAnswer) => (
-      onlineAnswer.category === scoreCard.category && onlineAnswer.playerId === room?.playerId
-    ));
-    const selfAnswer = room?.isOnline
-      ? ownOnlineAnswer?.answer.trim() ?? answers[scoreCard.category].trim()
-      : answers[scoreCard.category].trim();
-    const selfVerdict = getVisibleSelfVerdict(scoreCard.category, ownOnlineAnswer);
-    const entries = [
-      ...(scoreCard.targetId !== 'self' ? [{
-        answer: selfAnswer || 'No answer',
-        id: `compare-self-${scoreCard.category}`,
-        isNoAnswer: !selfAnswer,
-        label: 'You',
-        points: scoreAnswer({ verdict: selfVerdict }),
-        verdict: selfVerdict,
-      }] : []),
-      ...onlineRevealAnswers
-        .filter((onlineAnswer) => (
-          onlineAnswer.category === scoreCard.category
-          && onlineAnswer.playerId !== room?.playerId
-          && onlineAnswer.id !== scoreCard.key
-        ))
-        .map((onlineAnswer) => ({
-          answer: onlineAnswer.answer.trim() || 'No answer',
-          id: `compare-${onlineAnswer.id}`,
-          isNoAnswer: !onlineAnswer.answer.trim(),
-          label: onlineAnswer.playerName,
-          points: onlineAnswer.points,
-          verdict: onlineAnswer.verdict,
-        })),
-      ...botRoundAnswers
-        .filter((botAnswer) => (
-          botAnswer.category === scoreCard.category
-          && getBotAnswerKey(botAnswer.botId, botAnswer.category) !== scoreCard.key
-        ))
-        .map((botAnswer) => ({
-          answer: botAnswer.answer.trim() || 'No answer',
-          id: `compare-${botAnswer.botId}-${botAnswer.category}`,
-          isNoAnswer: !botAnswer.answer.trim(),
-          label: botAnswer.botName,
-          points: botAnswer.points,
-          verdict: botAnswer.verdict,
-        })),
-    ];
-
-    return entries.map((entry) => ({
-      ...entry,
-      isMatch: Boolean(activeAnswerKey && !entry.isNoAnswer && normalizeAnswerForCompare(entry.answer) === activeAnswerKey),
+  useEffect(() => {
+    if (!reviewSelection) return;
+    const currentIds = reviewCategoryDeck.flatMap((card) => card.entries.map((entry) => {
+      if (entry.id !== `review-self-${card.category}`) return entry.id;
+      return onlineRevealAnswers.find((answer) => answer.playerId === room?.playerId && answer.category === card.category)?.id ?? entry.id;
     }));
-  };
+    if (reviewSelection.context !== reviewContext || !currentIds.includes(reviewSelection.answerId)) setReviewSelection(null);
+  });
+  const getScoreComparisonEntries = (scoreCard: typeof activeScoreCard) => buildScoreComparisonEntries({
+    answers,
+    botRoundAnswers,
+    isOnline: Boolean(room?.isOnline),
+    onlineRevealAnswers,
+    playerId: room?.playerId,
+    scoreAnswer,
+    scoreCard,
+    verdicts,
+  });
 
   useEffect(() => {
     if (scoringStep !== 'score') {
@@ -1944,24 +1908,24 @@ export default function App() {
     setScoringCardIndex((currentIndex) => Math.min(currentIndex, scoringDeck.length - 1));
   }, [scoringDeck.length, scoringStep]);
 
-  function scoreActiveCard(vote: DisputeVote, scoreCard = activeScoreCard, scoredIndex = scoringCardIndex) {
+  async function scoreActiveCard(vote: DisputeVote, scoreCard = activeScoreCard, scoredIndex = scoringCardIndex) {
     if (!scoreCard) {
       return;
     }
-    if (room?.isOnline && isOnlineScoringExpired) {
+    if (room?.isOnline && (isOnlineScoringExpired || scoringPolicy.scoringComplete || !scoringPolicy.submissionsReady)) {
       gameAudio.playTap();
       triggerHaptic('error');
       return;
     }
 
     gameAudio.playTap();
-    triggerHaptic(scoreCard.answer.trim() ? 'score' : 'error');
 
     if (scoreCard.type === 'self') {
       updateVerdict(scoreCard.category, vote);
       rememberScoredWord(scoreCard.category, vote);
     } else if (scoreCard.type === 'online') {
-      castSyncedAnswerVote(scoreCard.onlineAnswer, vote);
+      const result = await castSyncedAnswerVote(scoreCard.onlineAnswer, vote);
+      if (!result?.accepted) return;
     } else {
       setBotAnswerPlayerVotes((currentVotes) => ({
         ...currentVotes,
@@ -1970,6 +1934,7 @@ export default function App() {
       updateBotAnswerVerdict(scoreCard.botAnswer.botId, scoreCard.category, vote);
     }
 
+    triggerHaptic(scoreCard.answer.trim() ? 'score' : 'error');
     if (scoreCard.answer.trim()) {
       maybeAskScoreReason({
         answer: scoreCard.answer,
@@ -2010,23 +1975,29 @@ export default function App() {
         || disputedBotAnswers.some((disputeKey) => disputeKey.endsWith(`:${deckCard.category}`))
         || onlineRevealAnswers.some((answer) => answer.category === deckCard.category && answer.dispute),
       entries: deckCard.entries.map((entry) => {
-        const onlineEntry = onlineRevealAnswers.find((answer) => answer.id === entry.id);
+        const onlineEntry = onlineRevealAnswers.find((answer) => entry.id === `review-self-${deckCard.category}` ? answer.playerId === room?.playerId && answer.category === deckCard.category : answer.id === entry.id);
         const botEntry = botRoundAnswers.find((answer) => `review-${answer.botId}-${answer.category}` === entry.id);
         return {
           answer: entry.answer,
           category: deckCard.category,
-          id: entry.id,
+          id: onlineEntry?.id ?? entry.id,
           isDuplicate: entry.isDuplicate,
           isNoAnswer: entry.isNoAnswer,
           label: entry.label,
           points: entry.points,
           status: entry.verdict as ReviewAnswer['status'],
+          onlineAnswerId: onlineEntry?.id,
+          resolution: reviewResolution(onlineEntry?.dispute?.status,
+            botEntry ? disputedBotAnswers.includes(getBotAnswerKey(botEntry.botId, deckCard.category))
+              : entry.id === `review-self-${deckCard.category}` && (disputedCategories.includes(deckCard.category) || botDisputedCategories.includes(deckCard.category)),
+            botEntry ? botAnswerVotes[getBotAnswerKey(botEntry.botId, deckCard.category)] : categoryVotes[deckCard.category]),
           targetId: onlineEntry?.playerId ?? botEntry?.botId,
-          targetType: entry.label === 'You' ? 'self' : onlineEntry ? 'online' : botEntry ? 'bot' : undefined,
+          targetType: entry.id === `review-self-${deckCard.category}` ? 'self' : onlineEntry ? 'online' : botEntry ? 'bot' : undefined,
         };
       }),
     }));
     const allAnswers = categories.flatMap((category) => category.entries);
+    const activeReviewAnswer = resolveReviewSelection(reviewSelection, reviewContext, allAnswers);
     const isWideReview = viewportWidth >= 700;
     const expandCompactReviewCategory = (category: StarterCategory) => {
       setCollapsedReviewCategories((currentCollapsedCategories) => {
@@ -2108,7 +2079,7 @@ export default function App() {
       }
 
       if (answer.targetType === 'online') {
-        const onlineAnswer = onlineRevealAnswers.find((candidate) => candidate.playerId === answer.targetId && candidate.category === category);
+        const onlineAnswer = onlineRevealAnswers.find((candidate) => candidate.id === answer.onlineAnswerId);
         const dispute = onlineAnswer?.dispute;
 
         if (!dispute) {
@@ -2126,17 +2097,13 @@ export default function App() {
                 : `${dispute.votes.length + dispute.botVoteCount}/${dispute.expectedVoteCount} votes cast.`}
             </Text>
             {renderCompactVoteButtons(userVote, (vote) => {
-              persistSyncedDisputeVote(dispute.id, vote);
-              setChallengeResultNotice({
-                title: 'Vote submitted',
-                message: `Your dispute vote was submitted as ${formatDisputeVote(vote)}. The final result will sync from the server.`,
-              });
+              void submitDisputeVote(dispute.id, vote);
             }, isOnlineDisputeExpired || dispute.status !== 'open')}
           </View>
         );
       }
 
-      const ownOnlineAnswer = onlineRevealAnswers.find((candidate) => candidate.playerId === room?.playerId && candidate.category === category);
+      const ownOnlineAnswer = onlineRevealAnswers.find((candidate) => candidate.id === answer.onlineAnswerId);
       if (ownOnlineAnswer?.dispute) {
         const dispute = ownOnlineAnswer.dispute;
         const userVote = dispute.votes.find((vote) => vote.voterPlayerId === room?.playerId)?.verdict as DisputeVote | undefined;
@@ -2150,11 +2117,7 @@ export default function App() {
                 : `${dispute.votes.length + dispute.botVoteCount}/${dispute.expectedVoteCount} votes cast.`}
             </Text>
             {renderCompactVoteButtons(userVote, (vote) => {
-              persistSyncedDisputeVote(dispute.id, vote);
-              setChallengeResultNotice({
-                title: 'Vote submitted',
-                message: `Your dispute vote was submitted as ${formatDisputeVote(vote)}. The final result will sync from the server.`,
-              });
+              void submitDisputeVote(dispute.id, vote);
             }, isOnlineDisputeExpired || dispute.status !== 'open')}
           </View>
         );
@@ -2200,12 +2163,13 @@ export default function App() {
           if (activeReviewAnswer.targetType === 'bot' && activeReviewAnswer.targetId) {
             toggleBotAnswerDispute(activeReviewAnswer.targetId, category);
           } else if (activeReviewAnswer.targetType === 'online' && activeReviewAnswer.targetId) {
-            const onlineAnswer = onlineRevealAnswers.find((answer) => answer.playerId === activeReviewAnswer.targetId && answer.category === category);
+            const onlineAnswer = onlineRevealAnswers.find((answer) => answer.id === activeReviewAnswer.onlineAnswerId);
             if (onlineAnswer) openSyncedAnswerDispute(onlineAnswer);
           } else if (activeReviewAnswer.targetType === 'self') {
-            const onlineAnswer = onlineRevealAnswers.find((answer) => answer.playerId === room?.playerId && answer.category === category);
-            if (onlineAnswer && room?.isOnline) openSyncedAnswerDispute(onlineAnswer);
-            else toggleDispute(category);
+            const onlineAnswer = onlineRevealAnswers.find((answer) => answer.id === activeReviewAnswer.onlineAnswerId);
+            if (room?.isOnline) {
+              if (onlineAnswer) openSyncedAnswerDispute(onlineAnswer);
+            } else toggleDispute(category);
           }
         }}
       />
@@ -2234,7 +2198,7 @@ export default function App() {
                     ? current.filter((item) => item !== category.category)
                     : [...current, category.category];
                 })}
-                onSelectAnswer={setActiveReviewAnswer}
+                onSelectAnswer={(answer) => setReviewSelection({ context: reviewContext, answerId: answer.id })}
                 selectedAnswerId={activeReviewAnswer?.id}
               />
             ))}
@@ -2243,20 +2207,13 @@ export default function App() {
         </View>
         <RoundTotal
           total={totalScore}
-          disabled={isRoundBusy || isWaitingForOnlineAgreement || isOnlineNonHost}
-          label={hasUnresolvedDisputes ? `Resolve ${unresolvedDisputeCount} dispute${unresolvedDisputeCount === 1 ? '' : 's'}` : 'Finish Round'}
-          onFinish={() => {
-            gameAudio.playReveal();
-            if (hasUnresolvedDisputes) {
-              scrollToFirstUnresolvedDispute();
-              return;
-            }
-            finishRound();
-          }}
+          disabled={!scoringPolicy.canFinish}
+          label={finishLabel}
+          onFinish={scoringNavigation.finish}
         />
-        {!isWideReview && activeReviewAnswer ? (
-          <Modal animationType="slide" transparent visible onRequestClose={() => setActiveReviewAnswer(null)}>
-            <View style={styles.reviewDetailsBackdrop}><View style={styles.reviewDetailsSheet}><Pressable accessibilityLabel="Close answer details" onPress={() => setActiveReviewAnswer(null)} style={styles.reviewDetailsClose}><Text style={styles.reviewDetailsCloseText}>Close</Text></Pressable>{details}</View></View>
+        {reviewDetailsVisible(isWideReview, Boolean(activeReviewAnswer), Boolean(challengeResultNotice)) ? (
+          <Modal animationType="slide" transparent visible onRequestClose={() => setReviewSelection(null)}>
+            <View style={styles.reviewDetailsBackdrop}><View style={styles.reviewDetailsSheet}><Pressable accessibilityLabel="Close answer details" onPress={() => setReviewSelection(null)} style={styles.reviewDetailsClose}><Text style={styles.reviewDetailsCloseText}>Close</Text></Pressable>{details}</View></View>
           </Modal>
         ) : null}
       </View>
@@ -2346,7 +2303,7 @@ export default function App() {
                       {hasAnswer ? scoreCard.answer : 'No answer'}
                     </Text>
                     <Text style={styles.scoreFocusHint}>
-                      {hasAnswer ? 'Choose one score below.' : 'Blank answer. Choose 0.'}
+                      {room?.isOnline && scoringPolicy.scoringComplete ? 'Required scoring is recorded. Continue to Review.' : hasAnswer ? 'Choose one score below.' : 'Blank answer. Choose 0.'}
                     </Text>
                     {hasAnswer ? (
                       <View style={styles.answerToolRow}>
@@ -2365,7 +2322,7 @@ export default function App() {
                       ]).map((action) => {
                         const ActionIcon = action.icon;
                         const isSelected = scoreCard.currentVote === action.vote;
-                        const isDisabled = isOnlineScoringExpired || (!hasAnswer && action.vote !== 'invalid');
+                        const isDisabled = isOnlineScoringExpired || (room?.isOnline && (scoringPolicy.scoringComplete || !scoringPolicy.submissionsReady)) || (!hasAnswer && action.vote !== 'invalid');
 
                         return (
                           <Pressable
@@ -2635,7 +2592,7 @@ export default function App() {
     ? [
       ...onlinePlayerScoreboardEntries,
       ...botPlayers.map((botPlayer) => ({
-        answeredCount: selectedCategories.length,
+        answeredCount: countAnsweredBotAnswers(botRoundAnswers, botPlayer.id),
         playerId: botPlayer.id,
         playerName: botPlayer.name,
         score: botPlayer.lastScore,
@@ -2653,7 +2610,6 @@ export default function App() {
   const canEditLetterPicker = !isOnlineNonPicker && (showNextLetterModal || canManageBrawl);
   const currentRoundPickerName = currentRound?.startedByPlayerName
     ?? (currentRound?.startedByPlayerId && currentRound.startedByPlayerId === room?.playerId ? room.playerName : undefined);
-  const isWaitingForOnlineAgreement = Boolean(room?.isOnline) && !onlineRoundAgreement.isRoundReady;
   const pendingSubmitterLabel = formatNameList(onlineRoundAgreement.pendingSubmitterNames);
   const pendingVoterLabel = formatNameList(onlineRoundAgreement.pendingVoterNames);
   const pendingDisputeVoterLabel = formatNameList(onlineRoundAgreement.pendingDisputeVoterNames);
@@ -2680,6 +2636,30 @@ export default function App() {
   });
   const isOnlineScoringExpired = onlineTimeoutPhase === 'scoring' && onlineCountdownState.status === 'expired';
   const isOnlineDisputeExpired = onlineTimeoutPhase === 'dispute' && onlineCountdownState.status === 'expired';
+  const scoringPolicy = getScoringReadiness({
+    online: Boolean(room?.isOnline), playerId: room?.playerId, answers: onlineRevealAnswers,
+    agreement: onlineRoundAgreement, busy: isRoundBusy, mayFinish: !isOnlineNonHost,
+    localPendingScores: hasPendingScores, localOpenDisputes: hasUnresolvedDisputes,
+  });
+  const scoringNavigation = createScoringNavigation(scoringPolicy, () => {
+    gameAudio.playTap();
+    setScoringStep('review');
+    setScoringCardIndex(0);
+  }, () => {
+    gameAudio.playReveal();
+    void finishRound();
+  });
+  const phasePresentation = scoringPhasePresentation(onlineCountdownState.status, onlineCountdownState.label, onlineRoundAgreement.isRoundReady && scoringPolicy.submissionsReady && humanScoringWork.pending.length === 0);
+  const finishDisputeCount = room?.isOnline ? onlineRoundAgreement.openDisputeCount : unresolvedDisputeCount;
+  const finishLabel = isOnlineNonHost ? `Waiting for ${room?.hostName}`
+    : finishDisputeCount > 0 ? `Resolve ${finishDisputeCount} dispute${finishDisputeCount === 1 ? '' : 's'}`
+      : isRoundBusy ? 'Finishing round…'
+        : !scoringPolicy.canFinish ? humanScoringWork.pending.length ? 'Complete required scores' : 'Waiting for other players' : 'Finish Round';
+  const reviewLabel = !scoringPolicy.canReview
+    ? room?.isOnline && !scoringPolicy.submissionsReady ? 'Waiting for answers'
+      : room?.isOnline && (isRoundBusy || onlineTimeoutPhase === 'complete') ? 'Syncing scores' : 'Give all scores first'
+    : 'Review Scores';
+
   const accomplishmentStars = [
     {
       color: '#FFE66D',
@@ -3624,20 +3604,23 @@ export default function App() {
                   onPress={() => {
                     gameAudio.playStart();
                     triggerHaptic('selection');
-                  createRoom(selectedMode.label === 'Practice'
-                    ? {
-                      ...selectedMode,
-                      botCount,
-                      botDifficulty,
-                      categories: selectedCategories,
-                      matchDurationSeconds: null,
-                      rounds: targetRounds,
-                      roundSeconds,
-                      scoringOwner,
-                      scoringStyle,
-                      rulesSummary: activeModeRules,
+                    if (selectedMode.label === 'Practice') {
+                      startPractice({
+                        ...selectedMode,
+                        botCount,
+                        botDifficulty,
+                        categories: selectedCategories,
+                        matchDurationSeconds: null,
+                        rounds: targetRounds,
+                        roundSeconds,
+                        scoringOwner,
+                        scoringStyle,
+                        rulesSummary: activeModeRules,
+                      });
+                      return;
                     }
-                    : selectedMode);
+
+                    createRoom(selectedMode);
                   }}
                   style={({ pressed }) => [
                     styles.primaryButton,
@@ -5103,10 +5086,12 @@ export default function App() {
                   </Text>
                 </View>
                 <Text style={styles.dashboardTitle}>
-                  {scoringOwner === 'Opponents' ? 'Judge their words' : 'Call your words'}
+                  {room.isOnline && !humanScoringWork.required.length ? 'No manual scores required' : scoringOwner === 'Opponents' ? 'Judge their words' : 'Call your words'}
                 </Text>
                 <Text style={styles.dashboardCopy}>
-                  {scoringStep === 'score'
+                  {room.isOnline && scoringStep === 'score'
+                    ? humanScoringWork.required.length ? 'Score every nonempty opponent answer. Recorded votes determine progress.' : 'Automatic scoring needs no manual CPU votes. Review the answers; Finish waits for server readiness.'
+                    : scoringStep === 'score'
                     ? scoringOwner === 'Opponents'
                       ? activeScoringTargetName
                         ? `Your target: ${activeScoringTargetName}. Make quick calls and keep the match moving.`
@@ -5143,14 +5128,17 @@ export default function App() {
                 ] as const).map((step) => (
                   <Pressable
                     key={step.key}
+                    disabled={step.key === 'review' && !scoringPolicy.canReview}
                     onPress={() => {
+                      if (step.key === 'review') { scoringNavigation.review(); return; }
                       gameAudio.playTap();
                       setScoringStep(step.key);
                     }}
                     style={({ pressed }) => [
                       styles.optionPill,
                       scoringStep === step.key && styles.optionPillSelected,
-                      pressed && styles.buttonPressed,
+                      step.key === 'review' && !scoringPolicy.canReview && styles.disabledButton,
+                      pressed && (step.key !== 'review' || scoringPolicy.canReview) && styles.buttonPressed,
                     ]}
                   >
                     <ShieldQuestion color={INK} size={18} strokeWidth={3} />
@@ -5166,7 +5154,7 @@ export default function App() {
               {room.isOnline ? (
                 <View
                   accessibilityRole="timer"
-                  accessibilityLabel={`Online ${onlineTimeoutPhase} deadline ${onlineCountdownState.label}`}
+                  accessibilityLabel={`Online ${onlineTimeoutPhase} readiness ${phasePresentation.label}`}
                   style={[
                     styles.phaseDeadlineCard,
                     onlineCountdownState.status === 'expired' && styles.phaseDeadlineCardExpired,
@@ -5182,18 +5170,10 @@ export default function App() {
                           ? 'Scoring deadline'
                           : 'Server deadline'}
                     </Text>
-                    <Text style={styles.phaseDeadlineValue}>{onlineCountdownState.label}</Text>
+                    <Text style={styles.phaseDeadlineValue}>{phasePresentation.label}</Text>
                   </View>
                   <Text style={styles.settingRowMeta}>
-                    {onlineCountdownState.status === 'active'
-                      ? 'Server-set countdown. The server finalises the result if time runs out.'
-                      : onlineCountdownState.status === 'expired'
-                        ? 'Expired. Waiting for the server to finalise this phase.'
-                        : onlineCountdownState.status === 'complete'
-                          ? 'This phase is complete on the server.'
-                          : onlineCountdownState.status === 'error'
-                            ? 'Could not sync the latest phase state.'
-                            : 'Syncing the server deadline.'}
+                    {phasePresentation.detail}
                   </Text>
                 </View>
               ) : null}
@@ -5264,7 +5244,7 @@ export default function App() {
                 <Text style={styles.settingRowMeta}>
                   {scoringStep === 'score'
                     ? activeScoringTargetName
-                      ? 'Score the assigned player only, then review anything that looks wrong.'
+                      ? room.isOnline ? 'Score every required opponent answer, then review anything that looks wrong.' : 'Score the assigned player only, then review anything that looks wrong.'
                       : liveBrawlSystemScoresBots
                         ? 'Live Brawl CPU answers and scores are shared by every player. You can check their meanings; human answers can still be challenged.'
                         : 'No assigned target this round. Move straight to review.'
@@ -5427,7 +5407,7 @@ export default function App() {
                         </View>
                       ) : null}
 
-                      {scoringOwner === 'Self' && isScoreStep ? (
+                      {!room?.isOnline && scoringOwner === 'Self' && isScoreStep ? (
                         <View style={styles.selfScorePanel}>
                           <Text style={styles.settingRowMeta}>Score your answer</Text>
                           <View style={styles.verdictRow}>
@@ -5500,7 +5480,7 @@ export default function App() {
                           {categoryOnlineAnswers.map((onlineAnswer) => {
                             const userSyncedVote = onlineAnswer.votes.find((vote) => vote.voterPlayerId === room.playerId)?.verdict;
                             const userDisputeVote = onlineAnswer.dispute?.votes.find((vote) => vote.voterPlayerId === room.playerId)?.verdict;
-                            const canScoreOnlineAnswer = activeScoringTarget === 'players' && onlineAnswer.playerId === assignedHumanScoringTargetId;
+                            const canScoreOnlineAnswer = activeScoringTarget === 'players' && humanScoringWork.required.some((answer) => answer.id === onlineAnswer.id) && !scoringPolicy.scoringComplete && scoringPolicy.submissionsReady;
                             const onlineScoreReason = scoreReasons[getScoreReasonKey(onlineAnswer.playerId, category)];
 
                             return (
@@ -5529,9 +5509,10 @@ export default function App() {
                                   <View style={styles.voteRow}>
                                     <Pressable
                                       disabled={isOnlineScoringExpired}
-                                      onPress={() => {
+                                      onPress={async () => {
                                         gameAudio.playTap();
-                                        castSyncedAnswerVote(onlineAnswer, 'valid');
+                                        const result = await castSyncedAnswerVote(onlineAnswer, 'valid');
+                                        if (!result?.accepted) return;
                                         maybeAskScoreReason({
                                           answer: onlineAnswer.answer,
                                           category,
@@ -5554,9 +5535,10 @@ export default function App() {
                                     </Pressable>
                                     <Pressable
                                       disabled={isOnlineScoringExpired}
-                                      onPress={() => {
+                                      onPress={async () => {
                                         gameAudio.playTap();
-                                        castSyncedAnswerVote(onlineAnswer, 'variant');
+                                        const result = await castSyncedAnswerVote(onlineAnswer, 'variant');
+                                        if (!result?.accepted) return;
                                         maybeAskScoreReason({
                                           answer: onlineAnswer.answer,
                                           category,
@@ -5579,9 +5561,10 @@ export default function App() {
                                     </Pressable>
                                     <Pressable
                                       disabled={isOnlineScoringExpired}
-                                      onPress={() => {
+                                      onPress={async () => {
                                         gameAudio.playTap();
-                                        castSyncedAnswerVote(onlineAnswer, 'invalid');
+                                        const result = await castSyncedAnswerVote(onlineAnswer, 'invalid');
+                                        if (!result?.accepted) return;
                                         maybeAskScoreReason({
                                           answer: onlineAnswer.answer,
                                           category,
@@ -5681,7 +5664,7 @@ export default function App() {
                                           disabled={isOnlineDisputeExpired}
                                           onPress={() => {
                                             gameAudio.playTap();
-                                            persistSyncedDisputeVote(onlineAnswer.dispute?.id ?? '', 'valid');
+                                            submitDisputeVote(onlineAnswer.dispute?.id ?? '', 'valid');
                                           }}
                                           style={({ pressed }) => [
                                             styles.voteButton,
@@ -5699,7 +5682,7 @@ export default function App() {
                                           disabled={isOnlineDisputeExpired}
                                           onPress={() => {
                                             gameAudio.playTap();
-                                            persistSyncedDisputeVote(onlineAnswer.dispute?.id ?? '', 'variant');
+                                            submitDisputeVote(onlineAnswer.dispute?.id ?? '', 'variant');
                                           }}
                                           style={({ pressed }) => [
                                             styles.voteButton,
@@ -5717,7 +5700,7 @@ export default function App() {
                                           disabled={isOnlineDisputeExpired}
                                           onPress={() => {
                                             gameAudio.playTap();
-                                            persistSyncedDisputeVote(onlineAnswer.dispute?.id ?? '', 'invalid');
+                                            submitDisputeVote(onlineAnswer.dispute?.id ?? '', 'invalid');
                                           }}
                                           style={({ pressed }) => [
                                             styles.voteButton,
@@ -6024,7 +6007,7 @@ export default function App() {
                                 disabled={isOnlineDisputeExpired}
                                 onPress={() => {
                                   gameAudio.playTap();
-                                  persistSyncedDisputeVote(ownOnlineAnswer.dispute?.id ?? '', 'valid');
+                                  submitDisputeVote(ownOnlineAnswer.dispute?.id ?? '', 'valid');
                                 }}
                                 style={({ pressed }) => [
                                   styles.voteButton,
@@ -6042,7 +6025,7 @@ export default function App() {
                                 disabled={isOnlineDisputeExpired}
                                 onPress={() => {
                                   gameAudio.playTap();
-                                  persistSyncedDisputeVote(ownOnlineAnswer.dispute?.id ?? '', 'variant');
+                                  submitDisputeVote(ownOnlineAnswer.dispute?.id ?? '', 'variant');
                                 }}
                                 style={({ pressed }) => [
                                   styles.voteButton,
@@ -6060,7 +6043,7 @@ export default function App() {
                                 disabled={isOnlineDisputeExpired}
                                 onPress={() => {
                                   gameAudio.playTap();
-                                  persistSyncedDisputeVote(ownOnlineAnswer.dispute?.id ?? '', 'invalid');
+                                  submitDisputeVote(ownOnlineAnswer.dispute?.id ?? '', 'invalid');
                                 }}
                                 style={({ pressed }) => [
                                   styles.voteButton,
@@ -6266,56 +6249,28 @@ export default function App() {
               <View style={styles.actions}>
                 {scoringStep === 'score' ? (
                   <Pressable
-                    disabled={hasPendingScores}
-                    onPress={() => {
-                      gameAudio.playTap();
-                      setScoringStep('review');
-                      setScoringCardIndex(0);
-                    }}
+                    disabled={!scoringPolicy.canReview}
+                    onPress={scoringNavigation.review}
                     style={({ pressed }) => [
                       styles.primaryButton,
-                      hasPendingScores && styles.disabledButton,
-                      pressed && !hasPendingScores && styles.buttonPressed,
+                      !scoringPolicy.canReview && styles.disabledButton,
+                      pressed && scoringPolicy.canReview && styles.buttonPressed,
                     ]}
                   >
-                    <Text style={styles.primaryButtonText}>
-                      {hasPendingScores ? 'Give all scores first' : 'Review Scores'}
-                    </Text>
+                    <Text style={styles.primaryButtonText}>{reviewLabel}</Text>
                   </Pressable>
                 ) : (
                   <Pressable
-                    disabled={isRoundBusy || isWaitingForOnlineAgreement || isOnlineNonHost}
-                    onPress={() => {
-                      gameAudio.playReveal();
-                      if (hasUnresolvedDisputes) {
-                        scrollToFirstUnresolvedDispute();
-                        return;
-                      }
-
-                      finishRound();
-                    }}
+                    disabled={!scoringPolicy.canFinish}
+                    onPress={scoringNavigation.finish}
                     style={({ pressed }) => [
                       styles.primaryButton,
-                      (isRoundBusy || isWaitingForOnlineAgreement || isOnlineNonHost) && styles.disabledButton,
-                      hasUnresolvedDisputes && styles.warningButton,
-                      pressed && !isRoundBusy && !isWaitingForOnlineAgreement && !isOnlineNonHost && styles.buttonPressed,
+                      !scoringPolicy.canFinish && styles.disabledButton,
+                      finishDisputeCount > 0 && styles.warningButton,
+                      pressed && scoringPolicy.canFinish && styles.buttonPressed,
                     ]}
                   >
-                    <Text style={styles.primaryButtonText}>
-                      {isOnlineNonHost
-                        ? `Waiting for ${room.hostName}`
-                        : hasUnresolvedDisputes
-                          ? `Resolve ${unresolvedDisputeCount} dispute${unresolvedDisputeCount === 1 ? '' : 's'}`
-                        : isWaitingForOnlineAgreement
-                          ? pendingSubmitterLabel
-                            ? `Waiting for ${pendingSubmitterLabel}`
-                            : pendingVoterLabel
-                              ? `Waiting for ${pendingVoterLabel}`
-                              : pendingDisputeVoterLabel
-                                ? `Waiting for ${pendingDisputeVoterLabel}`
-                              : 'Waiting for Players'
-                          : 'Finish Round'}
-                    </Text>
+                    <Text style={styles.primaryButtonText}>{finishLabel}</Text>
                   </Pressable>
                 )}
                 <Pressable onPress={() => {
@@ -7066,7 +7021,7 @@ export default function App() {
         </View>
       </Modal>
       <Modal
-        animationType="slide"
+        animationType="fade"
         transparent
         visible={screen === 'scoring' && Boolean(activeDisputeNotice) && !showScoringHelp}
       >

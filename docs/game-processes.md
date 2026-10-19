@@ -57,8 +57,11 @@ boot
 
 ## Current architecture problems
 
-- `apps/mobile/App.tsx` is about 9,300 lines and contains screens, theme constants, assets, game presentation, and many handlers together.
-- `apps/mobile/src/useLocalGame.ts` is about 2,500 lines and mixes local state, bot simulation, persistence, and online-room orchestration.
+- `apps/mobile/App.tsx` is about 10,735 lines and contains screens, theme constants, assets, game presentation, and many handlers together.
+- `apps/mobile/src/useLocalGame.ts` is about 2,863 lines and mixes local state, persistence, and online-room orchestration.
+- `apps/mobile/src/onlineRooms.ts` is about 1,983 lines and contains the Supabase room and authoritative-result adapter.
+- Pure review projections now live in `apps/mobile/src/reviewPresentation.ts`.
+- Pure local CPU round generation, duplicate handling and scoring now live in `apps/mobile/src/localBotRound.ts`.
 - Styles are in one `StyleSheet.create` block at the bottom of `App.tsx`.
 - Runtime assets and design-review screenshots are mixed across `assets/` and `tmp/`.
 
@@ -90,15 +93,14 @@ apps/mobile/
       gameModes.ts
       botLibrary.ts
       artwork.ts
-    game/
-      localGameState.ts           # local-only state and transitions
-      botSimulation.ts            # CPU answer generation and behaviour
     hooks/
       useLocalGame.ts
       useGameAudio.ts
     services/
       onlineRooms.ts
       wordBank.ts
+    localBotRound.ts              # CPU answer generation and local scoring
+    reviewPresentation.ts         # pure review data projections
 ```
 
 Do not create all folders at once. Create a folder only when moving the first file into it.
@@ -109,10 +111,9 @@ Do not create all folders at once. Create a folder only when moving the first fi
 2. Extract theme tokens and artwork references first; change no behaviour.
 3. Extract reusable components from the home screen.
 4. Extract one screen at a time, starting with Home, then Lobby, Round, Reveal, Scoring, and Leaderboard.
-5. Move bot data/simulation out of `useLocalGame.ts`.
-6. Rename `useLocalGame.ts` only after the extracted boundaries compile.
-7. Remove confirmed-unused assets and generated files only after reference checks.
-8. Run typecheck, tests, and a manual Android smoke test after each extraction.
+5. Rename `useLocalGame.ts` only after any further extracted boundaries compile.
+6. Remove confirmed-unused assets and generated files only after reference checks.
+7. Run typecheck, tests, and a manual Android smoke test after each extraction.
 
 ## Cleanup rules
 

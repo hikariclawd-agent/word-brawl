@@ -31,7 +31,7 @@ export function getAnswerOutcome(verdict: AnswerVerdict): AnswerOutcome {
     return "unique";
   }
 
-  if (verdict === "duplicate") {
+  if (verdict === "duplicate" || verdict === "variant") {
     return "shared";
   }
 

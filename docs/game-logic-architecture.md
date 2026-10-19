@@ -2,7 +2,7 @@
 
 ## Design goal
 
-The game rules must run identically in local play, CPU practice, Supabase room services, tests, and future web clients. React screens and network code are adapters; they do not own scoring or phase transitions.
+Shared answer normalisation and scoring primitives must remain consistent across local play, CPU practice, Supabase room services, tests, and future web clients. Local CPU simulation is a client-side path; public online verdicts, points and disputes remain server-authoritative. React screens and network code are adapters around those boundaries.
 
 ## Core API
 
@@ -32,11 +32,8 @@ The state is JSON-safe and includes:
 7. **Network code stays outside core.** Supabase subscriptions, retries, authentication, and reconnect behaviour belong in services/adapters.
 8. **Randomness stays at the edge.** Choose a letter outside the reducer and pass it in as an action, so tests and replays remain deterministic.
 
-## Next engineering steps
+## Unverified follow-ups
 
-1. Replace duplicated local scoring in `useLocalGame.ts` with this reducer.
-2. Add a local adapter that translates hook events into match actions.
-3. Add command permissions for host, player, and moderator actions.
-4. Add server-side revision checks to online room writes.
-5. Add migration functions when `schemaVersion` changes.
-6. Add replay fixtures for a complete local and online round.
+- A complete local and online replay fixture covering a full round is not yet established by the current test inventory.
+- Full server/SQL parity and physical Android behaviour remain unverified.
+- Adopting this reducer as the local hook's state engine is not implemented and should be treated as a separate, explicitly approved refactor rather than assumed to be complete.

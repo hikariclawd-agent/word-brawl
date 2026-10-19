@@ -378,8 +378,34 @@ export function reduceMatch(state: MatchState, action: MatchAction): MatchState 
   }
 }
 
+// Keep this explicit map aligned with public.normalize_live_brawl_answer().
+// Do not replace it with broad Unicode transliteration: unmapped characters
+// remain outside the client/server parity contract.
+const LATIN_NORMALIZATION_SOURCE = 'ÀÁÂÃÄÅĀĂĄàáâãäåāăąẠạḄḅƁɓÇĆĈĊČçćĉċčÐĎĐðďđƊɗÈÉÊËĒĔĖĘĚèéêëēĕėęěẸẹƐɛƑƒƓɠḤḥÌÍÎÏĨĪĬĮİìíîïĩīĭįıỊịƘƙṂṃÑŃŅŇñńņňṄṅṆṇÒÓÔÕÖØŌŎŐòóôõöøōŏőỌọƆɔŔŖŘŕŗřŚŜŞŠśŝşšṢṣÙÚÛÜŨŪŬŮŰŲùúûüũūŭůűųỤụÝŶŸýÿŷỴỵƳƴŹŻŽźżžŁłÞþṬṭ';
+const LATIN_NORMALIZATION_TARGET = 'AAAAAAAAAaaaaaaaaaAaBBBbCCCCCcccccDDDdddDdEEEEEEEEEeeeeeeeeeEeEeFfGgHhIIIIIIIIIiiiiiiiiiIiKkMmNNNNnnnnNnNnOOOOOOOOOoooooooooOoOoRRRrrrSSSSssssSsUUUUUUUUUUuuuuuuuuuuUuYYYyyyYyYyZZZzzzLlTtTt';
+
+function translateLatinCharacters(answer: string): string {
+  const sourceCharacters = Array.from(LATIN_NORMALIZATION_SOURCE);
+  const targetCharacters = Array.from(LATIN_NORMALIZATION_TARGET);
+  let translated = answer;
+
+  sourceCharacters.forEach((character, index) => {
+    translated = translated.split(character).join(targetCharacters[index] ?? '');
+  });
+
+  return translated
+    .replace(/Æ/g, 'AE')
+    .replace(/æ/g, 'ae')
+    .replace(/Œ/g, 'OE')
+    .replace(/œ/g, 'oe')
+    .replace(/ß/g, 'ss')
+    .replace(/ẞ/g, 'SS');
+}
+
 export function normalizeAnswer(answer: string): string {
-  return answer.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  return translateLatinCharacters(answer.trim())
+    .replace(/[^a-zA-Z0-9]+/g, '')
+    .toLocaleLowerCase();
 }
 
 export function findDuplicateAnswerKeys(answers: readonly MatchAnswer[]) {

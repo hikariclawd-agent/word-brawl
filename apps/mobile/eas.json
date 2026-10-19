@@ -2,8 +2,6 @@
   "build": {
     "preview-apk": {
       "distribution": "internal",
-      "corepack": true,
-      "pnpm": "10.17.1",
       "android": {
         "buildType": "apk"
       }

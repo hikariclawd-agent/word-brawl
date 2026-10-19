@@ -56,12 +56,16 @@ describe("player-facing scoring outcomes", () => {
     expect(scoreOutcome("shared")).toBe(5);
   });
 
-  it("maps technical rejection reasons to No score", () => {
-    expect(getAnswerOutcome("variant")).toBe("no_score");
+  it("maps invalid, blank and disputed reasons to No score", () => {
     expect(getAnswerOutcome("invalid")).toBe("no_score");
     expect(getAnswerOutcome("blank")).toBe("no_score");
     expect(getAnswerOutcome("disputed")).toBe("no_score");
     expect(scoreOutcome("no_score")).toBe(0);
+  });
+
+  it("maps the approved variant contract to Shared", () => {
+    expect(getAnswerOutcome("variant")).toBe("shared");
+    expect(scoreOutcome("shared")).toBe(5);
   });
 });
 

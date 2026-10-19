@@ -35,7 +35,7 @@ begin
       nullif(rules ->> 'duplicate', '')::integer
     )
     when 'variant' then coalesce(
-      nullif(rules ->> 'no_score', '')::integer,
+      nullif(rules ->> 'shared', '')::integer,
       nullif(rules ->> 'variant', '')::integer
     )
     when 'invalid' then coalesce(

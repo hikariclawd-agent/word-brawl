@@ -769,11 +769,8 @@ export default function App() {
         const shouldHideScoringHelp = hasSeenScoringHelp === 'true';
 
         setHideScoringHelpPermanently(shouldHideScoringHelp);
-        setShowScoringHelp(!shouldHideScoringHelp);
       })
-      .catch(() => {
-        setShowScoringHelp(true);
-      });
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {

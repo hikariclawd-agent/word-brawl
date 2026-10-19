@@ -2326,6 +2326,9 @@ export default function App() {
 
                         return (
                           <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Score ${scoreCard.category} for ${scoreCard.playerName}: ${action.label}`}
+                            accessibilityState={{ disabled: isDisabled, selected: isSelected }}
                             disabled={isDisabled}
                             key={action.vote}
                             onPress={() => scoreActiveCard(action.vote, scoreCard, index)}

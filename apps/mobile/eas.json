@@ -4,6 +4,7 @@
       "distribution": "internal",
       "corepack": true,
       "android": {
+        "image": "latest",
         "buildType": "apk"
       }
     }

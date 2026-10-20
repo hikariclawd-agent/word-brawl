@@ -7,6 +7,20 @@
         "image": "latest",
         "buildType": "apk"
       }
+    },
+    "staging-apk": {
+      "environment": "development",
+      "distribution": "internal",
+      "corepack": true,
+      "env": {
+        "EXPO_NO_DOTENV": "1",
+        "EXPO_PUBLIC_APP_ENV": "staging",
+        "EXPO_PUBLIC_BACKEND_ENV": "staging"
+      },
+      "android": {
+        "image": "latest",
+        "buildType": "apk"
+      }
     }
   }
 }

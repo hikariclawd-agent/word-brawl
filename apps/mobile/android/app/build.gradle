@@ -81,6 +81,8 @@ def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBu
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+def isStaging = System.getenv('EXPO_PUBLIC_BACKEND_ENV') == 'staging'
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -89,7 +91,8 @@ android {
 
     namespace 'com.anonymous.animalnameplace'
     defaultConfig {
-        applicationId 'com.anonymous.animalnameplace'
+        applicationId (isStaging ? 'com.anonymous.animalnameplace.staging' : 'com.anonymous.animalnameplace')
+        manifestPlaceholders = [wordBrawlLabel: isStaging ? 'Word Brawl Staging' : '@string/app_name']
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 9

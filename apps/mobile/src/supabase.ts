@@ -2,6 +2,14 @@ import 'react-native-url-polyfill/auto';
 
 import { createClient } from '@supabase/supabase-js';
 
+import { assertStagingBackend } from './stagingBackend';
+
+assertStagingBackend(
+  process.env.EXPO_PUBLIC_BACKEND_ENV,
+  process.env.EXPO_PUBLIC_SUPABASE_URL,
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
+);
+
 const LOCAL_SUPABASE_URL = 'http://127.0.0.1:54321';
 
 export const supabaseUrl =

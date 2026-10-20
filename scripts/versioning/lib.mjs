@@ -35,7 +35,7 @@ export function getGitCommit() {
   if (process.env.WORD_BRAWL_GIT_COMMIT) return process.env.WORD_BRAWL_GIT_COMMIT;
 
   try {
-    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     return 'unknown';
   }
@@ -51,7 +51,7 @@ export function getGitDirtyState() {
 }
 
 export function normalizeEnvironment(value = process.env.EXPO_PUBLIC_APP_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV) {
-  if (value === 'production' || value === 'preview' || value === 'development') return value;
+  if (value === 'staging' || value === 'production' || value === 'preview' || value === 'development') return value;
   if (value === 'prod') return 'production';
   if (value === 'dev' || value === 'test') return 'development';
   return process.env.NODE_ENV === 'production' ? 'production' : 'development';
@@ -173,7 +173,7 @@ export function checkVersionState() {
     if (!generated.buildDate) {
       errors.push('Generated build metadata is missing buildDate.');
     }
-    if (!['development', 'preview', 'production'].includes(generated.environment)) {
+    if (!['development', 'preview', 'production', 'staging'].includes(generated.environment)) {
       errors.push(`Generated build metadata environment ${generated.environment} is invalid.`);
     }
   }

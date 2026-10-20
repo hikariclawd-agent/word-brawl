@@ -2,6 +2,7 @@
   "build": {
     "preview-apk": {
       "distribution": "internal",
+      "corepack": true,
       "android": {
         "buildType": "apk"
       }

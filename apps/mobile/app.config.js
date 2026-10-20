@@ -25,9 +25,14 @@ const androidVersionCode = expo.android?.versionCode ?? 0;
 
 module.exports = {
   ...expo,
+  owner: 'teech',
   version: mobilePackage.version,
   extra: {
     ...(expo.extra ?? {}),
+    eas: {
+      ...(expo.extra?.eas ?? {}),
+      projectId: '69d790b1-157c-4c70-bb1f-ce9b54fe7e52',
+    },
     release: {
       appVersion: mobilePackage.version,
       buildIdentifier: `ios:${iosBuildNumber}/android:${androidVersionCode}`,

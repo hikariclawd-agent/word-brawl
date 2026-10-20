@@ -668,6 +668,7 @@ export function useLocalGame() {
 
   useEffect(() => {
     let isMounted = true;
+    let storedNameForStartup = '';
 
     Promise.all([
       AsyncStorage.getItem(RULES_SEEN_STORAGE_KEY),
@@ -675,6 +676,7 @@ export function useLocalGame() {
     ])
       .then(async ([rulesSeen, storedPlayerName]) => {
         const cleanStoredName = storedPlayerName?.trim() ?? '';
+        storedNameForStartup = cleanStoredName;
 
         if (cleanStoredName) {
           setPlayerName(cleanStoredName);
@@ -700,13 +702,13 @@ export function useLocalGame() {
         if (resumedRoom) {
           restoreOnlineRoom(resumedRoom);
         } else {
-          setScreen(hasStoredPlayerName || playerName.trim() ? 'home' : 'nameSetup');
+          setScreen(storedNameForStartup ? 'home' : 'nameSetup');
         }
       })
       .catch((error) => {
         if (isMounted) {
           setRoomError(error instanceof Error ? error.message : 'Could not restore the previous session.');
-          setScreen(hasStoredPlayerName || playerName.trim() ? 'home' : 'nameSetup');
+          setScreen(storedNameForStartup ? 'home' : 'nameSetup');
         }
       });
 

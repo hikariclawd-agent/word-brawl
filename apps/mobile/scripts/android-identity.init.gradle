@@ -1,0 +1,21 @@
+// Read-only configuration task. No assembly, signing, or credential access.
+allprojects {
+    afterEvaluate { p ->
+        if (p.path == ':app') {
+            p.tasks.register('verifyWordBrawlIdentity') {
+                doLast {
+                    def variants = p.android.applicationVariants.collect { v ->
+                        [name: v.name, applicationId: v.applicationId,
+                         label: v.mergedFlavor.manifestPlaceholders.wordBrawlLabel,
+                         namespace: p.android.namespace]
+                    }
+                    def release = p.tasks.named('assembleRelease').get()
+                    def report = [variants: variants,
+                        releaseTasks: release.taskDependencies.getDependencies(release).collect { it.path },
+                        stagingTaskExists: p.tasks.findByName('assembleStagingRelease') != null]
+                    println('WORD_BRAWL_IDENTITIES=' + groovy.json.JsonOutput.toJson(report))
+                }
+            }
+        }
+    }
+}

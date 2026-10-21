@@ -20,10 +20,9 @@ begin
   player_id := (room_result->>'playerId')::uuid;
   capability := (room_result->>'capability')::uuid;
   update public.rooms set bot_count=4, status='in_round', started_at=clock_timestamp() where id=fixture.room_id;
-  insert into public.rounds(room_id, round_number, letter, status, starts_at, ends_at, revealed_at)
-  values(room_id, 1, 'A', 'revealing', clock_timestamp() - interval '2 minutes', clock_timestamp() - interval '1 minute', clock_timestamp())
+  insert into public.rounds(room_id, round_number, letter, status, starts_at, ends_at)
+  values(room_id, 1, 'A', 'active', clock_timestamp() - interval '2 minutes', clock_timestamp() - interval '1 minute')
   returning id into round_id;
-  update public.rounds set scoring_ends_at=clock_timestamp()+interval '1 minute', dispute_ends_at=clock_timestamp()+interval '2 minutes' where id=fixture.round_id;
   insert into public.answers(round_id, room_player_id, category, answer_text, verdict, points)
   values
     (round_id, player_id, 'Name', 'Alice', 'valid', 10),
@@ -31,7 +30,20 @@ begin
     (round_id, player_id, 'Animal', 'Antelope', 'valid', 10),
     (round_id, player_id, 'Food', 'Apple', 'valid', 10);
 
-  materialized := public.materialize_live_brawl_scoring(room_id, round_id);
+  update public.rounds
+  set status='revealing', revealed_at=clock_timestamp(), scoring_ends_at=clock_timestamp()+interval '1 minute', dispute_ends_at=clock_timestamp()+interval '2 minutes'
+  where id=round_id;
+  materialized := jsonb_build_object(
+    'roomId', room_id,
+    'roundId', round_id,
+    'actorCount', (select count(*) from public.live_brawl_actors a where a.room_id=fixture.room_id),
+    'targetCount', (select count(*) from public.live_brawl_answer_targets t where t.round_id=fixture.round_id),
+    'assignmentCount', (select count(*) from public.live_brawl_score_assignments a where a.round_id=fixture.round_id),
+    'botDecisionCount', (select count(*) from public.live_brawl_score_decisions d where d.round_id=fixture.round_id and d.source='bot')
+  );
+  assert (select count(*) = 5 from public.live_brawl_actors a where a.room_id=fixture.room_id), 'Reveal did not materialize five actors';
+  assert (select count(*) = 20 from public.live_brawl_answer_targets t where t.round_id=fixture.round_id), 'Reveal did not materialize 20 targets';
+  assert (select count(*) = 20 from public.live_brawl_score_assignments a where a.round_id=fixture.round_id), 'Reveal did not materialize 20 assignments';
   assert (materialized->>'actorCount')::integer = 5, 'Expected one human plus four server-owned bot actors';
   assert (materialized->>'targetCount')::integer = 20, 'Expected 20 answer targets across four categories';
   assert (materialized->>'assignmentCount')::integer = 20, 'Expected one assignment per target';
@@ -98,6 +110,26 @@ begin
   assert (complete_result->>'accepted')::boolean, 'Deadline completion was not accepted';
   assert (select count(*)=4 from public.live_brawl_score_decisions d where d.round_id=fixture.round2_id and d.source='timeout'), 'Pending human assignments did not timeout';
   assert (select status='scored' from public.rounds where id=fixture.round2_id), 'Timed-out round did not reach scored state';
+end;
+$$;
+
+do $$
+<<legacy_fixture>>
+declare
+  settings jsonb := '{"bot_count":0,"bot_difficulty":"Normal","categories":["Name","Place","Animal","Food"],"match_duration_seconds":null,"mode_label":"Live Brawl","mode_rules":"legacy scoring","round_seconds":60,"scoring_owner":"Opponents","scoring_style":"Classic","target_rounds":1}';
+  options jsonb := '{"visibility":"public","maxPlayers":5,"matchmakingBucket":"test:live-scoring-v1","rulesetVersion":1,"minClientVersion":"1.1.0"}';
+  room_result jsonb; room_id uuid; round_id uuid; snapshot_count integer;
+begin
+  room_result := public.create_managed_room('legacy-v1-human','Legacy Human',settings,options);
+  room_id := (room_result->>'roomId')::uuid;
+  update public.rooms set bot_count=4, status='in_round', started_at=clock_timestamp() where id=room_id;
+  insert into public.rounds(room_id, round_number, letter, status, starts_at, ends_at)
+  values(room_id, 1, 'A', 'active', clock_timestamp()-interval '2 minutes', clock_timestamp()-interval '1 minute')
+  returning id into round_id;
+  update public.rounds set status='revealing', revealed_at=clock_timestamp() where id=round_id;
+  select count(*) into snapshot_count from public.bot_round_snapshots s where s.round_id=legacy_fixture.round_id;
+  assert snapshot_count = 4, 'Legacy reveal did not preserve bot snapshots';
+  assert (select count(*) = 0 from public.live_brawl_actors a where a.room_id=legacy_fixture.room_id), 'Legacy room unexpectedly created v2 actors';
 end;
 $$;
 

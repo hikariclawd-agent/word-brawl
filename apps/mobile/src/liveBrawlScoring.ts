@@ -92,15 +92,6 @@ export function assertFiveActorFourCategoryContract(
   return true;
 }
 
-export async function materializeLiveBrawlScoring(roomId: string, roundId: string) {
-  const { data, error } = await supabase.rpc('materialize_live_brawl_scoring', {
-    p_room_id: roomId,
-    p_round_id: roundId,
-  });
-  if (error) throw new Error(error.message);
-  return data as { actorCount: number; assignmentCount: number; botDecisionCount: number; roundId: string; targetCount: number };
-}
-
 export async function getLiveBrawlScoringSnapshot(roomId: string, roundId: string): Promise<LiveBrawlScoringSnapshot> {
   const [actors, targets, assignments, decisions, disputes] = await Promise.all([
     supabase.from('live_brawl_actors').select('id, actor_key, actor_kind, room_player_id, bot_index, seat_index, display_name').eq('room_id', roomId).order('seat_index'),

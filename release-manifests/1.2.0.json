@@ -56,12 +56,14 @@
     "20261018090000_fix_dispute_points_persistence",
     "20261019213000_allow_designated_picker_start_round",
     "20261019224500_live_brawl_five_second_search",
-    "20261021140000_live_brawl_player_scoring_contract"
+    "20261021140000_live_brawl_player_scoring_contract",
+    "20261021150000_harden_live_brawl_scoring_authority"
   ],
   "keyFeaturesAndFixes": [
     "Repairs Live Brawl public scoring with five server-assigned actors and one authoritative scorer for every answer target across four categories.",
     "Supports human-to-bot, bot-to-human, and bot-to-bot score decisions without fake human sessions.",
     "Adds idempotent server-authoritative score, dispute, bot-challenge, timeout, and round-completion commands.",
+    "Hardens RPC permissions, enforces the five-actor/four-category room contract, and rejects disputes outside the capability and deadline window.",
     "Includes the three migrations omitted from the historical 1.1.0 manifest: dispute points persistence, designated picker start, and five-second search.",
     "Preserves legacy ruleset v1 rooms and the 1.1.0 / Android build 9 baseline."
   ],

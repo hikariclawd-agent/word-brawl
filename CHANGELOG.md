@@ -8,6 +8,7 @@ All notable Word Brawl changes are recorded here. Released entries are historica
 
 - Add the Live Brawl v2 actor, answer-target, cyclic assignment, score-decision, dispute, and round-score authority tables and commands.
 - Migration: `20261021140000_live_brawl_player_scoring_contract`.
+- Migration: `20261021150000_harden_live_brawl_scoring_authority` adds actor-count/category guards, dispute capability/deadline checks, and server-only helper permissions.
 - Proposed release manifest: `release-manifests/1.2.0.json` records the complete migration chain, including the three migrations omitted from historical `1.1.0`: `20261018090000_fix_dispute_points_persistence`, `20261019213000_allow_designated_picker_start_round`, and `20261019224500_live_brawl_five_second_search`.
 
 ### TEST

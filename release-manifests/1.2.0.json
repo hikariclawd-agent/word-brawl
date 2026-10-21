@@ -1,7 +1,7 @@
 {
   "appVersion": "1.2.0",
   "buildIdentifier": "ios:10/android:10",
-  "gitCommit": "91d9d36657d53a497fe6f4e6fe8f8336bccd6f05",
+  "gitCommit": "147ce8e0291a60421e25d5a7e796d166cde26c7b",
   "releaseDate": "2026-10-21",
   "releaseStatus": "proposed",
   "databaseMigrationsIncluded": [

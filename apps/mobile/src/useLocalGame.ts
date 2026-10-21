@@ -121,6 +121,7 @@ export type LocalRoom = {
   status: RoomStatus;
   spectatorCount: number;
   visibility: RoomVisibility;
+  rulesetVersion?: number;
 };
 
 export type RoundSummary = {
@@ -220,7 +221,9 @@ const MATCH_STATE_SYNC_INTERVAL_MS = 5000;
 const LIVE_TABLE_BOT_FILL_INTERVAL_SECONDS = REAL_PLAYER_WAIT_MS / 1000;
 const LIVE_BRAWL_CLIENT_VERSION = '1.1.0';
 const LIVE_TABLE_EXPIRES_IN_MINUTES = 10;
-const LIVE_BRAWL_RULESET_VERSION = 1;
+// v2 is an additive matchmaking bucket for the authoritative five-actor
+// scoring contract. Existing v1 rooms remain readable by older clients.
+const LIVE_BRAWL_RULESET_VERSION = 2;
 const LIVE_TABLE_TARGET_PLAYERS = 5;
 const DEFAULT_PROFILE: PlayerProfile = {
   allTimePoints: 0,
@@ -883,6 +886,7 @@ export function useLocalGame() {
             setupLocked: snapshot.setupLocked,
             status: snapshot.status,
             spectatorCount: snapshot.spectatorCount,
+            rulesetVersion: snapshot.rulesetVersion,
           };
 
           return nextRoom.expiresAt === currentRoom.expiresAt
@@ -896,6 +900,7 @@ export function useLocalGame() {
             && nextRoom.setupLocked === currentRoom.setupLocked
             && nextRoom.status === currentRoom.status
             && nextRoom.spectatorCount === currentRoom.spectatorCount
+            && nextRoom.rulesetVersion === currentRoom.rulesetVersion
             ? currentRoom
             : nextRoom;
         });
@@ -1161,6 +1166,7 @@ export function useLocalGame() {
       status: onlineRoom.status,
       spectatorCount: onlineRoom.spectatorCount,
       visibility: onlineRoom.visibility,
+      rulesetVersion: onlineRoom.rulesetVersion,
     });
     applySyncedRoomSettings(onlineRoom.settings);
 
@@ -1433,6 +1439,7 @@ export function useLocalGame() {
         status: onlineRoom.status,
         spectatorCount: onlineRoom.spectatorCount,
         visibility: onlineRoom.visibility,
+        rulesetVersion: onlineRoom.rulesetVersion,
       });
       setScreen('lobby');
     } catch (error) {
@@ -1552,6 +1559,7 @@ export function useLocalGame() {
         status: onlineRoom.status,
         spectatorCount: onlineRoom.spectatorCount,
         visibility: onlineRoom.visibility,
+        rulesetVersion: onlineRoom.rulesetVersion,
       });
       applySyncedRoomSettings(onlineRoom.settings);
       setRoomCodeInput('');
@@ -1825,6 +1833,7 @@ export function useLocalGame() {
           status: onlineRoom.status,
           spectatorCount: onlineRoom.spectatorCount,
           visibility: onlineRoom.visibility,
+          rulesetVersion: onlineRoom.rulesetVersion,
         });
         setRoomCodeInput(onlineRoom.code);
       } catch (error) {

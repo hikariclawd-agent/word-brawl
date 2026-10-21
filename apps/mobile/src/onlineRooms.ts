@@ -41,6 +41,7 @@ export type OnlineRoomResult = {
   status: RoomStatus;
   spectatorCount: number;
   visibility: RoomVisibility;
+  rulesetVersion?: number;
 };
 
 export type OnlineRoundResult = {
@@ -73,6 +74,7 @@ export type OnlineRoomSnapshot = {
   status: RoomStatus;
   spectatorCount: number;
   visibility: RoomVisibility;
+  rulesetVersion?: number;
 };
 
 export type OnlineResumeResult = OnlineRoomResult & {
@@ -298,6 +300,11 @@ async function getDevicePlayerId() {
   const nextId = createDevicePlayerId();
   await AsyncStorage.setItem(DEVICE_PLAYER_ID_KEY, nextId);
   return nextId;
+}
+
+/** Shared by the Live Brawl v2 scorer adapter; preserves the existing device identity. */
+export async function getOnlineDevicePlayerId() {
+  return getDevicePlayerId();
 }
 
 function createCommandId() {
@@ -845,6 +852,7 @@ async function buildOnlineRoomResult(room: RoomRow, playerId: string, fallbackNa
     status: room.status,
     spectatorCount: counts.spectatorCount,
     visibility: room.room_visibility ?? 'private',
+    rulesetVersion: room.ruleset_version,
   };
 }
 
@@ -1203,9 +1211,9 @@ export async function getOnlineRoomSnapshot(roomId: string, playerId?: string): 
 
   const { data: room, error: roomError } = await supabase
     .from('rooms')
-    .select('empty_since, expires_at, status, letter_picker_player_id, started_at, round_seconds, room_visibility, mode_label, mode_rules, bot_count, bot_difficulty, categories, match_duration_seconds, target_rounds, scoring_owner, scoring_style')
+    .select('empty_since, expires_at, status, letter_picker_player_id, started_at, round_seconds, room_visibility, mode_label, mode_rules, bot_count, bot_difficulty, categories, match_duration_seconds, target_rounds, scoring_owner, scoring_style, ruleset_version')
     .eq('id', roomId)
-    .single<Pick<RoomRow, 'bot_count' | 'bot_difficulty' | 'categories' | 'empty_since' | 'expires_at' | 'letter_picker_player_id' | 'match_duration_seconds' | 'mode_label' | 'mode_rules' | 'room_visibility' | 'round_seconds' | 'scoring_owner' | 'scoring_style' | 'started_at' | 'status' | 'target_rounds'>>();
+    .single<Pick<RoomRow, 'bot_count' | 'bot_difficulty' | 'categories' | 'empty_since' | 'expires_at' | 'letter_picker_player_id' | 'match_duration_seconds' | 'mode_label' | 'mode_rules' | 'room_visibility' | 'round_seconds' | 'scoring_owner' | 'scoring_style' | 'started_at' | 'status' | 'target_rounds' | 'ruleset_version'>>();
 
   if (roomError) {
     throw new Error(roomError.message);
@@ -1253,6 +1261,7 @@ export async function getOnlineRoomSnapshot(roomId: string, playerId?: string): 
     status: isExpired ? 'expired' : room.status,
     spectatorCount: counts.spectatorCount,
     visibility: room.room_visibility ?? 'private',
+    rulesetVersion: room.ruleset_version,
   };
 }
 
@@ -1880,6 +1889,27 @@ export async function completeOnlineRound({
   roomId: string;
   roundId: string;
 }) {
+  const { data: liveRoom, error: liveRoomError } = await supabase
+    .from('rooms')
+    .select('room_visibility, ruleset_version')
+    .eq('id', roomId)
+    .single<Pick<RoomRow, 'room_visibility' | 'ruleset_version'>>();
+  if (liveRoomError) throw new Error(liveRoomError.message);
+  if (liveRoom.room_visibility === 'public' && (liveRoom.ruleset_version ?? 1) >= 2) {
+    const { devicePlayerId, expectedRevision } = await getAuthoritativeRoomContext(roomId);
+    const { error } = await supabase.rpc('complete_live_brawl_round_command', {
+      p_capability: await getRoomCapability(playerId),
+      p_command_id: createCommandId(),
+      p_device_player_id: devicePlayerId,
+      p_expected_revision: expectedRevision,
+      p_finish_match: finishMatch,
+      p_room_id: roomId,
+      p_room_player_id: playerId,
+      p_round_id: roundId,
+    });
+    if (error) throw new Error(error.message);
+    return;
+  }
   const readiness = await getOnlineRevealSnapshot(roomId, roundId);
 
   if (!readiness.isRoundReady) {
@@ -1941,6 +1971,16 @@ async function getRoomCapability(playerId: string) {
   const capability = (await getRoomCapabilities())[playerId];
   if (!capability) throw new Error('This older room has no management credential. Create a new room.');
   return capability;
+}
+
+export async function getOnlineRoomCapability(playerId: string) {
+  return getRoomCapability(playerId);
+}
+
+export async function getOnlineMatchRevision(roomId: string) {
+  const { data, error } = await supabase.from('rooms').select('match_revision').eq('id', roomId).single<{ match_revision?: number }>();
+  if (error) throw new Error(error.message);
+  return data.match_revision ?? 0;
 }
 async function finishManagedRoom(result: ManagedRoomResult, name: string) {
   await AsyncStorage.mergeItem(ROOM_CAPABILITIES_KEY, JSON.stringify({ [result.playerId]: result.capability }));

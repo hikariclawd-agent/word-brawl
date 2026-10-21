@@ -78,7 +78,8 @@ import { useGameAudio } from './src/useGameAudio';
 import { debugGameError, installWebDiagnostics } from './src/devDiagnostics';
 import { getKnownCategoriesForAnswer, type BotPersonality, type GameModeSetup, useLocalGame } from './src/useLocalGame';
 import { findMatchingBotAnswer } from './src/localBotRound';
-import { markOnlineRoomPlayerDisconnected, recoverOnlineRoomPlayer } from './src/onlineRooms';
+import { getOnlineDevicePlayerId, getOnlineMatchRevision, markOnlineRoomPlayerDisconnected, recoverOnlineRoomPlayer } from './src/onlineRooms';
+import { castLiveBrawlScore, getLiveBrawlScoringSnapshot, openLiveBrawlDispute } from './src/liveBrawlScoring';
 import { createForegroundRecoveryCoordinator } from './src/foregroundRecovery';
 import { getCountdownState, getPhaseDeadline, getTimeoutPhase } from './src/timeoutRules';
 import {
@@ -1528,6 +1529,62 @@ export default function App() {
     return outcome;
   }
 
+  async function scoreLiveBotAnswer(botId: string, category: StarterCategory, vote: DisputeVote) {
+    if (!room?.isOnline || room.rulesetVersion !== 2 || !room.id || !room.playerId || !currentRound?.id) {
+      updateBotAnswerVerdict(botId, category, vote);
+      return;
+    }
+
+    try {
+      const snapshot = await getLiveBrawlScoringSnapshot(room.id, currentRound.id);
+      const target = snapshot.targets.find((candidate) => candidate.actorId === snapshot.actors.find((actor) => actor.actorKey === botId)?.id && candidate.category === category);
+      const humanActor = snapshot.actors.find((actor) => actor.roomPlayerId === room.playerId && actor.actorKind === 'human');
+      const assignment = target && humanActor
+        ? snapshot.assignments.find((candidate) => candidate.answerTargetId === target.id && candidate.scorerActorId === humanActor.id)
+        : undefined;
+      if (!assignment) throw new Error('No authoritative Live Brawl scoring assignment was found for this answer.');
+      await castLiveBrawlScore({
+        assignmentId: assignment.id,
+        commandId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        devicePlayerId: await getOnlineDevicePlayerId(),
+        expectedRevision: await getOnlineMatchRevision(room.id),
+        playerId: room.playerId,
+        roomId: room.id,
+        roundId: currentRound.id,
+        verdict: vote,
+      });
+      setBotAnswerPlayerVotes((currentVotes) => ({
+        ...currentVotes,
+        [getBotAnswerKey(botId, category)]: vote,
+      }));
+      updateBotAnswerVerdict(botId, category, vote);
+      setChallengeResultNotice({ title: 'Score accepted', message: `${botId}'s ${category} answer was recorded by the server.` });
+    } catch (error) {
+      setChallengeResultNotice({ title: 'Score not confirmed', message: error instanceof Error ? error.message : 'The server did not accept this score.' });
+    }
+  }
+
+  async function openLiveOwnerDispute(answer: typeof onlineRevealAnswers[number]) {
+    if (!room?.id || !room.playerId || !currentRound?.id) return;
+    try {
+      const snapshot = await getLiveBrawlScoringSnapshot(room.id, currentRound.id);
+      const target = snapshot.targets.find((candidate) => candidate.category === answer.category
+        && candidate.actorId === snapshot.actors.find((actor) => actor.roomPlayerId === room.playerId)?.id);
+      if (!target) throw new Error('No authoritative Live Brawl answer target was found.');
+      await openLiveBrawlDispute({
+        answerTargetId: target.id,
+        commandId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        devicePlayerId: await getOnlineDevicePlayerId(),
+        playerId: room.playerId,
+        roomId: room.id,
+        roundId: currentRound.id,
+      });
+      setChallengeResultNotice({ title: 'Challenge opened', message: 'Your score challenge was recorded by the server.' });
+    } catch (error) {
+      setChallengeResultNotice({ title: 'Challenge not opened', message: error instanceof Error ? error.message : 'The server did not accept this challenge.' });
+    }
+  }
+
   function castBotAnswerVote(botId: string, category: StarterCategory, vote: DisputeVote) {
     const disputeKey = getBotAnswerKey(botId, category);
     const botVotes = botAnswerBotVoteLists[disputeKey] ?? createBotVoteList(botCounterVotes[disputeKey]);
@@ -1722,8 +1779,11 @@ export default function App() {
   const assignedHumanScoringTargetId = humanScoringTargetIds.length
     ? humanScoringTargetIds[stableHash(`${scoringTargetSeed}:player`) % humanScoringTargetIds.length]
     : undefined;
-  const assignedBotScoringTargetId = botScoringTargetIds.length
-    ? botScoringTargetIds[stableHash(`${scoringTargetSeed}:bot`) % botScoringTargetIds.length]
+  const liveBrawlUsesPlayerScoring = room?.visibility === 'public' && room?.rulesetVersion === 2;
+  const assignedBotScoringTargetId = liveBrawlUsesPlayerScoring
+    ? botScoringTargetIds.find((botId) => botId === 'bot-4') ?? botScoringTargetIds[botScoringTargetIds.length - 1]
+    : botScoringTargetIds.length
+      ? botScoringTargetIds[stableHash(`${scoringTargetSeed}:bot`) % botScoringTargetIds.length]
     : undefined;
   const assignedHumanScoringTargetName = onlineRevealAnswers.find((onlineAnswer) => (
     onlineAnswer.playerId === assignedHumanScoringTargetId
@@ -1734,10 +1794,12 @@ export default function App() {
   const mixedScoringTarget = stableHash(`${currentRound?.id ?? roundLetter}:${room?.playerId ?? 'local'}`) % 2 === 0
     ? 'bots'
     : 'players';
-  const liveBrawlSystemScoresBots = room?.visibility === 'public';
+  const liveBrawlSystemScoresBots = room?.visibility === 'public' && !liveBrawlUsesPlayerScoring;
   const humanScoringWork = getHumanScoringWork(onlineRevealAnswers, room?.playerId);
   const activeScoringTarget = room?.isOnline
-    ? humanScoringWork.required.length ? 'players' : 'none'
+    ? liveBrawlUsesPlayerScoring && hasBotScoringTargets
+      ? 'bots'
+      : humanScoringWork.required.length ? 'players' : 'none'
     : scoringOwner === 'Self'
     ? 'self'
     : hasHumanScoringTargets && hasBotScoringTargets
@@ -1753,7 +1815,9 @@ export default function App() {
       ? room?.isOnline ? 'all opponents' : assignedHumanScoringTargetName
       : undefined;
   const scoringTaskTotal = room?.isOnline && scoringStep === 'score'
-    ? humanScoringWork.required.length
+    ? liveBrawlUsesPlayerScoring
+      ? botRoundAnswers.filter((botAnswer) => botAnswer.botId === assignedBotScoringTargetId && botAnswer.answer.trim()).length
+      : humanScoringWork.required.length
     : scoringStep === 'score'
     ? activeScoringTarget === 'self'
       ? selectedCategories.length
@@ -1768,7 +1832,9 @@ export default function App() {
           : 0
     : selectedCategories.length;
   const scoringTaskDone = room?.isOnline && scoringStep === 'score'
-    ? humanScoringWork.completed
+    ? liveBrawlUsesPlayerScoring
+      ? botRoundAnswers.filter((botAnswer) => botAnswer.botId === assignedBotScoringTargetId && Boolean(botAnswerPlayerVotes[getBotAnswerKey(botAnswer.botId, botAnswer.category)])).length
+      : humanScoringWork.completed
     : scoringStep === 'score'
     ? activeScoringTarget === 'self'
       ? selectedCategories.filter((category) => verdicts[category] !== 'blank').length
@@ -5774,7 +5840,7 @@ export default function App() {
                                       <Pressable
                                         onPress={() => {
                                           gameAudio.playTap();
-                                          updateBotAnswerVerdict(botAnswer.botId, category, 'valid');
+                                          void scoreLiveBotAnswer(botAnswer.botId, category, 'valid');
                                           maybeAskScoreReason({
                                             answer: botAnswer.answer,
                                             category,
@@ -5797,7 +5863,7 @@ export default function App() {
                                       <Pressable
                                         onPress={() => {
                                           gameAudio.playTap();
-                                          updateBotAnswerVerdict(botAnswer.botId, category, 'variant');
+                                          void scoreLiveBotAnswer(botAnswer.botId, category, 'variant');
                                           maybeAskScoreReason({
                                             answer: botAnswer.answer,
                                             category,
@@ -5820,7 +5886,7 @@ export default function App() {
                                       <Pressable
                                         onPress={() => {
                                           gameAudio.playTap();
-                                          updateBotAnswerVerdict(botAnswer.botId, category, 'invalid');
+                                          void scoreLiveBotAnswer(botAnswer.botId, category, 'invalid');
                                           maybeAskScoreReason({
                                             answer: botAnswer.answer,
                                             category,
@@ -6072,7 +6138,11 @@ export default function App() {
                               disabled={isOnlineScoringExpired}
                               onPress={() => {
                                 gameAudio.playTap();
-                                openSyncedAnswerDispute(ownOnlineAnswer);
+                                if (room.rulesetVersion === 2) {
+                                  void openLiveOwnerDispute(ownOnlineAnswer);
+                                } else {
+                                  openSyncedAnswerDispute(ownOnlineAnswer);
+                                }
                               }}
                               style={({ pressed }) => [
                                 styles.disputeButton,

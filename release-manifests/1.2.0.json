@@ -1,0 +1,107 @@
+{
+  "appVersion": "1.2.0",
+  "buildIdentifier": "ios:10/android:10",
+  "gitCommit": "91d9d36657d53a497fe6f4e6fe8f8336bccd6f05",
+  "releaseDate": "2026-10-21",
+  "releaseStatus": "proposed",
+  "databaseMigrationsIncluded": [
+    "20260627231500_initial_game_schema",
+    "20260629103000_room_expiry_15_minutes",
+    "20260629120500_room_lifecycle_update_policy",
+    "20260706021000_word_entries_cache",
+    "20260706100200_room_letter_picker",
+    "20260707193200_room_setup_sync",
+    "20260707215200_room_empty_since",
+    "20260708183600_answer_disputes",
+    "20260709115500_room_visibility",
+    "20260709215500_live_brawl_eight_seat_bot_limit",
+    "20260709233500_live_brawl_session_advance",
+    "20260709235000_fix_live_brawl_session_advance_round_number",
+    "20260709235500_live_brawl_matchmaking_buckets",
+    "20260710155500_web_app_performance_indexes",
+    "20261004222500_authoritative_answer_commands",
+    "20261004223500_authoritative_vote_commands",
+    "20261004224000_server_resolves_votes_and_scores",
+    "20261004224500_revoke_direct_vote_writes",
+    "20261004225000_configurable_server_scoring",
+    "20261004225500_expand_server_score_range",
+    "20261004230000_player_facing_scoring_model",
+    "20261005141500_authoritative_dispute_open",
+    "20261005142500_authoritative_dispute_votes",
+    "20261005210000_authoritative_dispute_resolution",
+    "20261010113000_live_room_authority",
+    "20261010113100_live_room_creation_fix",
+    "20261010113200_live_room_seat_guard",
+    "20261010113300_live_room_snapshot_lifecycle",
+    "20261010113400_live_room_host_continuity",
+    "20261010113500_managed_private_join",
+    "20261010131000_live_bot_identity_consistency",
+    "20261010131800_live_bot_shared_words",
+    "20261011103200_live_brawl_authoritative_timeouts",
+    "20261011133000_stage2_dispute_timeout_and_resolution_fix",
+    "20261011141500_stage3_server_authority_hardening",
+    "20261011194000_live_brawl_two_seat_target",
+    "20261011200900_live_brawl_two_seat_matchmaking",
+    "20261011231000_live_brawl_matchmaking_window",
+    "20261012010000_live_brawl_five_seat_sequential_matchmaking",
+    "20261012010500_fix_live_brawl_five_seat_advance_ambiguity",
+    "20261012094500_auto_score_solo_live_brawl_answers",
+    "20261012113000_reviewable_answer_validation_cache",
+    "20261012113500_fix_validation_cache_normalization",
+    "20261012114500_word_validation_background_enrichment",
+    "20261012132000_require_complete_live_brawl_answer_categories",
+    "20261012133500_enrichment_stale_reclaim_and_backoff",
+    "20261012141000_diacritic_normalization_and_source_precedence",
+    "20261012144500_expand_african_latin_normalization",
+    "20261018090000_fix_dispute_points_persistence",
+    "20261019213000_allow_designated_picker_start_round",
+    "20261019224500_live_brawl_five_second_search",
+    "20261021140000_live_brawl_player_scoring_contract"
+  ],
+  "keyFeaturesAndFixes": [
+    "Repairs Live Brawl public scoring with five server-assigned actors and one authoritative scorer for every answer target across four categories.",
+    "Supports human-to-bot, bot-to-human, and bot-to-bot score decisions without fake human sessions.",
+    "Adds idempotent server-authoritative score, dispute, bot-challenge, timeout, and round-completion commands.",
+    "Includes the three migrations omitted from the historical 1.1.0 manifest: dispute points persistence, designated picker start, and five-second search.",
+    "Preserves legacy ruleset v1 rooms and the 1.1.0 / Android build 9 baseline."
+  ],
+  "testsExecuted": [
+    {
+      "command": "corepack pnpm --filter mobile typecheck --pretty false",
+      "result": "passed",
+      "notes": "Mobile TypeScript check passed on the repair branch."
+    },
+    {
+      "command": "corepack pnpm --filter mobile test --reporter=dot",
+      "result": "passed",
+      "notes": "15 files and 206 tests passed, including Live Brawl scoring contract coverage."
+    },
+    {
+      "command": "corepack pnpm --filter @animal-name-place/game-core test --reporter=dot",
+      "result": "passed",
+      "notes": "3 files and 38 tests passed."
+    },
+    {
+      "command": "docker exec -i supabase_db_animal-name-place psql -U postgres -d postgres -v ON_ERROR_STOP=1",
+      "result": "passed",
+      "notes": "Migration and scoring-contract fixture applied inside a transaction and rolled back; no local database changes were retained."
+    },
+    {
+      "command": "corepack pnpm version:test",
+      "result": "passed",
+      "notes": "Versioning tests passed."
+    },
+    {
+      "command": "corepack pnpm version:check",
+      "result": "expected-failure",
+      "notes": "The frozen 1.1.0 manifest omits three historical migrations and the new repair migration; the proposed 1.2.0 manifest contains the complete set."
+    }
+  ],
+  "knownLimitations": [
+    "This is a proposed source manifest, not a released or installed build.",
+    "The proposed iOS 10 and Android 10 identifiers are placeholders for a future approved distribution and have not been assigned or built.",
+    "The migration has not been deployed to staging or production.",
+    "Runtime Live Brawl gameplay acceptance remains pending review and deployment approval."
+  ],
+  "installedAndVerified": false
+}
